@@ -1,5 +1,6 @@
 # yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
 fragment:
+  name: uvm
   # UVM + fw-hdl environment for the SPL class model. The UVM register agent
   # drives the engine through the protocol-independent std_mem_if BFM; scenarios
   # mirror packages/wb_dma/bench (sw_dma / arb_test / hw_dma, Phase-1 subset).
@@ -7,72 +8,214 @@ fragment:
   # Requires UVM_HOME=$IVPM_PACKAGES/uvm (the uvm package ships no envrc;
   # hdlsim.vlt.SimLibUVM locates UVM via $UVM_HOME).
   tasks:
-  - name: uvm-env-src
-    uses: std.FileSet
-    # wb_dma_uvm_pkg imports fwvip_wb_pkg (the reg-access agent). Pull the fwvip-wb
-    # UVM source; it is ordered after SimLibUVM via each image's needs list.
-    needs: [spl, org.fwvip.wb.vip-uvm-hvlsrc]
+  # ---- Reusable building blocks -------------------------------------------------
+  # base-uvm-env : compiles the shared env + tests sources into a UVM SimLib.
+  # base-uvm-tb-img : adds a tb top (hdl/hvl) and builds the SimImage on an
+  #   externally-supplied env library (injected through the compound boundary).
+  # base-uvm-tb : combines the two for the simple, self-contained case.
+  # All three take a `basedir` param (root of the UVM tree holding env/ tests/
+  # tb/), defaulting to this fragment's srcdir; override to retarget the tree.
+  - name: base-uvm-env
     with:
-      type: systemVerilogSource
-      base: env
-      incdirs: [".", "env"]      # 'env' so the per-class .svh includes resolve
-      include:
-      - wb_dma_model_pkg.sv
-      - wb_dma_ref_model_pkg.sv   # always-on passive reference (taps + xact record)
-      - wb_dma_uvm_pkg.sv
+      # Root of the UVM directory tree (holds env/ tests/ tb/). Defaults to this
+      # fragment's own srcdir; override to point the shared env/tb tasks at a
+      # different UVM tree. 'basedir' is threaded into both the FileSet base and
+      # its incdirs (incdirs are resolved against srcdir, not base).
+      basedir:
+        type: str
+        value: "${{ srcdir }}"
+      # Package files to compile from env/, in dependency order. Defaults to a
+      # glob (alphabetical); override with an explicit ordered list when the
+      # pkgs form a stack that alphabetical order would mis-sequence.
+      env_include:
+        type: list
+        value: ["*_pkg.sv"]
+    tasks:
+    - name: pre-deps
+      consumes: none
+      needs: [hdlsim.vlt.SimLibUVM]
 
-  - name: uvm-test-src
-    uses: std.FileSet
-    needs: [uvm-env-src]
+    - name: env-src
+      needs: [pre-deps]
+      uses: std.FileSet
+      with:
+        base: "${{ basedir }}/env"
+        type: systemVerilogSource
+        include: "${{ env_include }}"
+        incdirs: [ "${{ basedir }}", "${{ basedir }}/env" ]
+
+    - name: env
+      needs: [env-src]
+      consumes: none
+
+    - name: tests-src
+      needs: [env]
+      uses: std.FileSet
+      with:
+        base: "${{ basedir }}/tests"
+        type: systemVerilogSource
+        include: ["*_pkg.sv"]
+        incdirs: [ "${{ basedir }}", "${{ basedir }}/tests" ]
+
+    - name: tests
+      needs: [tests-src]
+      consumes: none
+
+    - name: env-lib
+      needs: [ tests ]
+      uses: hdlsim.vlt.SimLib
+
+  - name: base-uvm-tb-img
     with:
-      type: systemVerilogSource
-      base: tests
-      incdirs: [".", "tests"]    # 'tests' so the per-class .svh includes resolve
-      include:
-      - wb_dma_tests_pkg.sv
+      basedir:
+        type: str
+        value: "${{ srcdir }}"
+      hvl_top:
+        type: str
+        value: "hvl_top"
+      hdl_top:
+        type: str
+        value: "hdl_top"
+      # Extra simulator/compile args for the image (e.g. Verilog-2001 ext map).
+      sim_args:
+        type: list
+        value: []
+    tasks:
+    # Entry subtask: receives the env library injected through the compound
+    # boundary (whatever the instantiation feeds via `needs`, e.g. base-uvm-env's
+    # env-lib). FileSet passes that input through, so it flows on to sim-img.
+    - name: tb-src
+      uses: std.FileSet
+      with:
+        base: "${{ basedir }}/tb"
+        type: systemVerilogSource
+        include: ["${{ hdl_top }}.sv", "${{ hvl_top }}.sv"]
+        incdirs: [ "${{ basedir }}/tb" ]
+    - name: tb
+      needs: [tb-src]
+      consumes: none
+    - name: sim-img
+      needs: [tb]
+      uses: hdlsim.vlt.SimImage
+      with:
+        top: [ "${{ hvl_top }}" ]
+        args: "${{ sim_args }}"
 
-  - name: uvm-tb-src
+  # Combined, self-contained testbench: env-lib (inherited from base-uvm-env) +
+  # tb top + image. The tb subtasks are inlined as DIRECT children (rather than
+  # instancing base-uvm-tb-img) because dfm can't thread `${{ this.* }}` params
+  # into a nested compound's `with:` -- only direct subtasks can read `this`.
+  # This keeps base-uvm-tb fully configurable (basedir / hvl_top / hdl_top).
+  - name: base-uvm-tb
+    uses: base-uvm-env
+    with:
+      hvl_top:
+        type: str
+        value: "hvl_top"
+      hdl_top:
+        type: str
+        value: "hdl_top"
+    tasks:
+    - name: tb-src
+      needs: [env-lib]
+      uses: std.FileSet
+      with:
+        base: "${{ basedir }}/tb"
+        type: systemVerilogSource
+        include: ["${{ hdl_top }}.sv", "${{ hvl_top }}.sv"]
+        incdirs: [ "${{ basedir }}/tb" ]
+    - name: tb
+      needs: [tb-src]
+      consumes: none
+    - name: sim-img
+      needs: [tb]
+      uses: hdlsim.vlt.SimImage
+      with:
+        top: [ "${{ hvl_top }}" ]
+
+  # Reusable compound to build a Verilator UVM sim image for one DUT-view variant.
+  # BLOCKED: currently unusable because dfm (this version) cannot get SimImage's
+  # list-typed `top` through the compound. Source injection via `needs` -> the
+  # `src-in` slot works fine, but every way of supplying `top` fails:
+  #   - compound param + scalar ${{top}}       -> list JSON-stringified to a str
+  #   - compound param + ["${{top}}"] element  -> override ignored, uses default
+  #   - override sim-img with:{top:[..]}        -> value set in graph but LOST at
+  #        runtime: the override drops the inherited param TYPE, so `top` is typed
+  #        `none` and serialized away (see the `Expected none` pydantic warning).
+  # Until that's fixed, the per-variant images (uvm-img / uvm-wb-img / uvm-rtl-img)
+  # are kept as flat hdlsim.vlt.SimImage tasks with a literal `top:` list.
+  - name: uvm-tb-sim-img
+    tasks:
+    - name: src-in
+      # Injection slot: receives the compound input (sources fed via the
+      # instantiation's needs). Pure passthrough (no `uses`).
+      consumes: none
+
+    - name: sim-img
+      uses: hdlsim.vlt.SimImage
+      needs: [hdlsim.vlt.SimLibUVM, src-in]
+      # top: injected per-variant -- see BLOCKED note above.
+
+  - name: uvm-sim-run
+    with:
+      UVM_TESTNAME:
+        type: str
+    tasks:
+    - name: sim-run
+      uses: hdlsim.SimRun
+      with:
+        plusargs:
+        - "UVM_TESTNAME=${{ UVM_TESTNAME }}"
+
+  # ---- Shared UVM env library + per-view images (base-* primitives) ------------
+  # One base-uvm-env builds the env+tests SimLib ONCE. Its blanket *_pkg.sv glob
+  # compiles all five (cumulative) model pkgs, so env-src is overridden to inject
+  # every upstream dep the stack imports: `spl` (wb_dma_spl_pkg + fw_hdl/fw_proto_*
+  # via its own needs), the wb + gpio UVM VIP sources, and wb_ram_slv (the
+  # interface rtl_model binds via `virtual wb_ram_slv`). These are added to env-src
+  # (not env) so their files precede the pkgs that import them in the filelist.
+  - name: uvm-rtl-ram-src
     uses: std.FileSet
-    needs: [uvm-test-src]
     with:
       type: systemVerilogSource
       base: tb
-      incdirs: ["."]
-      include: [hdl_top_spl.sv, hvl_top_spl.sv]
+      include: [wb_ram_slv.sv]
 
-  - name: uvm-img
-    uses: hdlsim.vlt.SimImage
-    needs: [spl, hdlsim.vlt.SimLibUVM, uvm-tb-src]
+  - name: uvm-env
+    uses: base-uvm-env
+    # Feed the design-package deps through the compound INPUT (not a subtask
+    # override): compound needs -> input -> pre-deps -> env-src, so their files
+    # (and incdirs) precede the env pkgs that import them in the compiled filelist.
+    needs: [spl, org.fwvip.wb.vip-uvm-hvlsrc, org.fwvip.gpio.vip-uvm-hvlsrc, uvm-rtl-ram-src]
+    # The five model pkgs are a cumulative stack; the blanket *_pkg.sv glob emits
+    # them alphabetically (rtl_model lands 3rd, before the uvm/wb_model pkgs it
+    # depends on). Supply the explicit dependency order via env_include.
     with:
-      top: [hvl_top_spl]
+      env_include:
+      - wb_dma_model_pkg.sv
+      - wb_dma_ref_model_pkg.sv
+      - wb_dma_uvm_pkg.sv
+      - wb_dma_wb_model_pkg.sv
+      - wb_dma_rtl_model_pkg.sv
+
+  # SPL (TLM) image: shared env-lib + hvl_top_spl. No extra DUT sources -- the
+  # class model lives in the env-lib (wb_dma_spl_pkg, pulled in via `spl`).
+  - name: uvm-img
+    uses: base-uvm-tb-img
+    needs: [uvm-env]
+    with:
+      hvl_top: hvl_top_spl
+      hdl_top: hdl_top_spl
 
   # ---- Signal-level (Wishbone) UVM path: same env+tests, wb_dma_spl DUT --------
   # The WB model pkg brings in the wrapper + Wishbone kit (via spl-wb) on top of
   # the shared env sources.
-  - name: uvm-wb-env-src
-    uses: std.FileSet
-    needs: [uvm-env-src, spl-wb, org.fwvip.gpio.vip-uvm-hvlsrc]
-    with:
-      type: systemVerilogSource
-      base: env
-      incdirs: [".", "env"]      # 'env' so the per-class .svh includes resolve
-      include:
-      - wb_dma_wb_model_pkg.sv
-
-  - name: uvm-wb-tb-src
-    uses: std.FileSet
-    needs: [uvm-test-src, uvm-wb-env-src]
-    with:
-      type: systemVerilogSource
-      base: tb
-      incdirs: ["."]
-      include: [hdl_top_spl_wb.sv, hvl_top_spl_wb.sv]
-
   - name: uvm-wb-img
-    uses: hdlsim.vlt.SimImage
-    needs: [spl-wb, hdlsim.vlt.SimLibUVM, org.fwvip.gpio.vip-uvm-hvlsrc, uvm-wb-tb-src]
+    uses: base-uvm-tb-img
+    needs: [uvm-env, spl-wb]
     with:
-      top: [hvl_top_spl_wb]
+      hvl_top: hvl_top_spl_wb
+      hdl_top: hdl_top_spl_wb
 
   - root: uvm-wb-smoke
     uses: hdlsim.vlt.SimRun
@@ -113,44 +256,19 @@ fragment:
   # same-cycle memory, not a variable-latency transactor. The per-channel HS bus is
   # stubbed in hvl_top_rtl (tied off), so only sw_copy / arb run here. SimLibUVM
   # MUST precede the GPIO VIP (uvm base types first).
-  - name: uvm-rtl-ram-src
-    uses: std.FileSet
-    with:
-      type: systemVerilogSource
-      base: tb
-      include: [wb_ram_slv.sv]
-
-  - name: uvm-rtl-env-src
-    uses: std.FileSet
-    needs: [uvm-wb-env-src, uvm-rtl-ram-src]
-    with:
-      type: systemVerilogSource
-      base: env
-      incdirs: [".", "env"]      # 'env' so the per-class .svh includes resolve
-      include: [wb_dma_rtl_model_pkg.sv]
-
-  - name: uvm-rtl-tb-src
-    uses: std.FileSet
-    needs: [uvm-test-src, uvm-rtl-env-src]
-    with:
-      type: systemVerilogSource
-      base: tb
-      incdirs: ["."]
-      include: [hdl_top_rtl.sv, hvl_top_rtl.sv]
-
+  # RTL image: OpenCores wb_dma_top (rtl) + wb_dma_spl transactor modules (spl-wb).
+  # wb_ram_slv already rides in the shared env-lib. hvl_top_rtl stubs the per-chan
+  # HS bus, so only sw_copy / arb run here.
   - name: uvm-rtl-img
-    uses: hdlsim.vlt.SimImage
-    needs: [rtl, spl-wb, hdlsim.vlt.SimLibUVM, org.fwvip.gpio.vip-uvm-hvlsrc, uvm-rtl-tb-src]
+    uses: base-uvm-tb-img
+    needs: [uvm-env, rtl, spl-wb]
     with:
-      top: [hvl_top_rtl]
-      # The OpenCores RTL is Verilog-2001 (uses `int` as a port name, reserved in
-      # SystemVerilog). Map the .v extension to Verilog-2001 so those files parse
-      # as Verilog while the .sv env/transactors stay SystemVerilog.
-      # --no-assert: the RTL's one-hot SMs carry `// synopsys parallel_case
-      # full_case` synthesis pragmas that Verilator (unlike event sims) promotes
-      # to runtime $stop; they trip on the all-zero t=0 state before the first
-      # clocked reset load. Disable so Verilator matches standard-sim semantics.
-      args: ["+1364-2001ext+v", "--no-assert"]
+      hvl_top: hvl_top_rtl
+      hdl_top: hdl_top_rtl
+      # .v -> Verilog-2001 (the RTL uses `int` as a port name, reserved in SV);
+      # --no-assert: the RTL's parallel_case/full_case pragmas trip Verilator's
+      # $stop on the all-zero t=0 state before the first clocked reset load.
+      sim_args: ["+1364-2001ext+v", "--no-assert"]
 
   - root: uvm-rtl-smoke
     uses: hdlsim.vlt.SimRun

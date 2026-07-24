@@ -81,6 +81,21 @@ package wb_dma_spl_pkg;
         bit [11:0] tot_sz;        // 11:0  RW  (total transfer size in words)
     } wb_dma_sz_t;
 
+    // Global CSR (register-file offset 0x00). Only PAUSE is implemented; the RTL
+    // reads it back as {31'h0, paused}. Typed so callers say `.read().pause`.
+    typedef struct packed {
+        bit [30:0] reserved;      // 31:1 RO
+        bit        pause;         //  0   RW  (pause all DMA transfers)
+    } wb_dma_gcsr_t;
+
+    // Interrupt mask / source vector (INT_MASK_A/B at 0x04/0x08, INT_SRC_A/B at
+    // 0x0c/0x10): one bit per channel (bit N = channel N), MSB reserved. `.ch` is
+    // the per-channel slice (was a bare [30:0] index).
+    typedef struct packed {
+        bit        reserved;      // 31   RO
+        bit [30:0] ch;            // 30:0 per-channel interrupt bits
+    } wb_dma_intvec_t;
+
     // ---- DMA-specific APIs (each ships a `FW_WB_DMA_*_IMP macro) -------------
     `include "wb_dma_hs_if.svh"
     `include "wb_dma_irq_if.svh"

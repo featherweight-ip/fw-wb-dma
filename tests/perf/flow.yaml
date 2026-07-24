@@ -5,13 +5,7 @@ fragment:
   # copies. `needs` the SPL FileSet (fw-wb-dma.spl).
   tasks:
   - name: perf-tb
-    uses: std.FileSet
-    with:
-      type: systemVerilogSource
-      include:
-      - wb_dma_perf_tb.sv
-      incdirs:
-      - .
+    uses: sv-module        # single .sv in dir -> glob; incdirs[.] inherited
 
   - name: perf-img
     uses: hdlsim.vlt.SimImage

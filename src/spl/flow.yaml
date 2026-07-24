@@ -1,36 +1,16 @@
 # yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
 fragment:
-  # Behavioral (class-based) DMA model. The core model speaks the protocol-
-  # independent fw_mem_if edge (fw-hdl) plus fw.proto.gpio's ABSTRACT drive API
-  # (gpio_drive_if) for its interrupt outputs -- so it needs fw-hdl.hdl.sv-src
-  # (fw_hdl_pkg + fw_std_pkg) and fw.proto.gpio.files (for fw_proto_gpio_pkg). It
-  # depends on gpio's API interface-class only: the kit's transactor bridges ride
-  # along in the package (compiled, never instanced), and the GPIO xtor itself is
-  # instanced only at the wb_dma_spl wrapper. Still NO Wishbone dependency here.
-  # incdir '.' picks up the .svh includes (macros, API classes, model components).
+  # Behavioral (class-based) DMA core model -- the target-independent SPL model.
+  # It speaks the protocol-independent fw_mem_if edge (fw-hdl) plus fw.proto.gpio's
+  # ABSTRACT drive API (gpio_drive_if) for its interrupt outputs -- so it needs
+  # fw-hdl.hdl.sv-src (fw_hdl_pkg + fw_std_pkg) and fw.proto.gpio.files (for
+  # fw_proto_gpio_pkg). It depends on gpio's API interface-class only: the kit's
+  # transactor bridges ride along in the package (compiled, never instanced). NO
+  # signal-level / Wishbone content here -- that is the RTL-boundary binding, which
+  # lives in src/spl-rtl (task `spl-rtl`). incdir '.' (from sv-package) picks up the
+  # model-component .svh includes. The dir now holds exactly one package, so the
+  # sv-package glob sequences it -- no explicit include needed.
   tasks:
   - export: spl
-    uses: std.FileSet
+    uses: sv-package
     needs: [fw-hdl.hdl.sv-src, fw.proto.wb.files, fw.proto.gpio.files]
-    with:
-      type: systemVerilogSource
-      include:
-      - wb_dma_spl_pkg.sv
-      incdirs:
-      - .
-
-  # Signal-level wrapper: the wb_dma_spl module (ports identical to the OpenCores
-  # wb_dma_top) instances the fw-proto-wb Wishbone transactors + fw_mem_if
-  # adapters and roots the class model. Depends on the core model plus the whole
-  # Wishbone kit (transactor modules + fw_proto_wb_pkg adapters) and the GPIO kit
-  # (the interrupt outputs are driven through a gpio_initiator_xtor).
-  - export: spl-wb
-    uses: std.FileSet
-    needs: [spl, fw.proto.wb.files, fw.proto.gpio.files]
-    with:
-      type: systemVerilogSource
-      include:
-      - wb_dma_spl_wb_pkg.sv        # signal-binding bridges (WB/GPIO adapters)
-      - wb_dma_spl.sv               # the design-top module
-      incdirs:
-      - .

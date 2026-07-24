@@ -3,18 +3,81 @@ package:
   name: fw-wb-dma
   with:
     sim:
-      type: str 
+      type: str
       value: vlt
+    # Model images the regression runs the UNIVERSAL tests on -- short aliases
+    # (tlm/wb/rtl). Default: all three. Select a subset from the CLI
+    # (comma-separated, no quoting needed):
+    #   dfm run run-tests -D images=tlm          # TLM only (dev)
+    #   dfm run run-tests -D images=rtl          # RTL only
+    #   dfm run run-tests -D images=tlm,rtl
+    images:
+      type: list
+      value: [tlm, wb, rtl]
+    # Alias -> image task name. The suite maps `this.image` through this to the
+    # task it depends on (needs: ["${{ image_of[this.image] }}"]).
+    image_of:
+      type: map
+      value: { tlm: uvm-img, wb: uvm-wb-img, rtl: uvm-rtl-img }
+  uses: uvm-dv-project
+
+  # IVPM-generated map (name -> flow file, rooted at packages/) resolves the
+  # imports below by NAME, so we no longer hardcode ${{ env.IVPM_PACKAGES }}/<dir>
+  # paths. Imports still list what's brought into scope (the map only resolves the
+  # names); dropping a name here removes it from `needs` scope.
+  package-map: packages/dv-flow-package-map.yaml
 
   imports:
-  - ${{ env.IVPM_PACKAGES }}/fw-hdl            # package fw-hdl (fw_hdl_pkg + fw_std_pkg/fw_mem_if)
-  - ${{ env.IVPM_PACKAGES }}/fw-proto-wb       # package fw.proto.wb (Wishbone transactors + adapters)
-  - ${{ env.IVPM_PACKAGES }}/fw-proto-gpio     # package fw.proto.gpio (GPIO transactors)
-  - ${{ env.IVPM_PACKAGES }}/fwvip-gpio        # package org.fwvip.gpio (GPIO UVM VIP)
-  - ${{ env.IVPM_PACKAGES }}/fwvip-wb          # package org.fwvip.wb (Wishbone UVM VIP: reg-access agent)
+  - uvm-dv-project.yaml     # local base project (src-*/run-* API, sv-*) + dv.* capabilities
+  - fw-hdl                  # fw_hdl_pkg + fw_std_pkg / fw_mem_if
+  - fw.proto.wb             # Wishbone transactors + adapters
+  - fw.proto.gpio           # GPIO transactors
+  - org.fwvip.gpio          # GPIO UVM VIP
+  - org.fwvip.wb            # Wishbone UVM VIP (reg-access agent)
+
+  # Tool/flag wiring lives in the LEAF (not the common base project or the dv.*
+  # capability packages): the leaf picks opt-vs-debug and injects the flag
+  # DataItems into the dv.uvm compounds via each instantiation's `needs:` (see
+  # tests/uvm/flow.yaml). The `debug` config below swaps the Opt holders for Dbg.
+  configs:
+  - name: debug
+    desc: |
+      Settings for running in debug mode
+    tasks:
+    - override: flags-sim-comp
+      uses: hdlsim.SimCompArgsDbg
+    - override: flags-sim-elab
+      uses: hdlsim.SimElabArgsDbg
+    - override: flags-sim-run
+      uses: hdlsim.SimRunArgsDbg
+
+  tasks:
+  - override: src-rtl
+    needs:
+    - rtl
+  - override: run-tests
+    # uvm-tests lives in the `uvm` fragment namespace -> qualify it (a package-root
+    # override can't reach a sub-namespace task by short name).
+    needs: [uvm.uvm-tests]
+
+  - name: flags-sim-comp
+    uses: hdlsim.SimCompArgsOpt
+    with:
+      sim: "${{ sim }}"
+
+  - name: flags-sim-elab
+    uses: hdlsim.SimElabArgsOpt
+    with:
+      sim: "${{ sim }}"
+
+  - name: flags-sim-run
+    uses: hdlsim.SimRunArgsOpt
+    with:
+      sim: "${{ sim }}"
 
   fragments:
   - src/spl/flow.yaml
+  - src/spl-rtl/flow.yaml
   - src/rtl/flow.yaml
   - tests/smoke/flow.yaml
   - tests/uvm/flow.yaml

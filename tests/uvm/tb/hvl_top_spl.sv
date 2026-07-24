@@ -17,9 +17,7 @@ module hvl_top_spl;
     import fw_hdl_pkg::*;
     import fw_proto_wb_pkg::*;
     import fwvip_wb_pkg::*;
-    import wb_dma_model_pkg::*;
-    import wb_dma_ref_model_pkg::*;
-    import wb_dma_uvm_pkg::*;
+    import wb_dma_env_pkg::*;
     import wb_dma_tests_pkg::*;
 
     // Signal-level substrate (clock/reset + clock xtor) lives in hdl_top_spl.

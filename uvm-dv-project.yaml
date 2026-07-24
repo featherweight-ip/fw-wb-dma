@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+package:
+  name: uvm-dv-project
+  # Common BASE project: the core capabilities a leaf project extends/configures
+  # (the src-*/run-* API, generic FileSet conveniences). Reusable verification
+  # CAPABILITIES live in their own imported dv.* packages (dv.uvm, dv.lint,
+  # dv.synth, ...). Tool/flag wiring (flags-sim-*, opt-vs-debug) is deliberately
+  # NOT here -- the LEAF project owns it and injects it into the dv.* compounds.
+
+  imports:
+  # dv.* capability packages. Leaf projects reach these by qualified name
+  # (dv.uvm.env-base, dv.uvm.tb-img, ...).
+  - uvm-dv-project/uvm.yaml       # dv.uvm  : UVM env/image/run building blocks
+  # - uvm-dv-project/lint.yaml    # dv.lint : (placeholder)
+  # - uvm-dv-project/synth.yaml   # dv.synth: (placeholder)
+
+  tasks:
+  - export: src-rtl
+    desc: |
+      Provides synthesizable Verilog RTL sources
+
+  - export: src-spl
+    desc: |
+      Provides sequential process level (SPL) SystemVerilog sources
+
+  - root: run-tests
+    desc: |-
+      Entrypoint for running tests defined by the project
+
+  - root: run-lint-rtl
+    desc: |-
+      Entrypoint for running lint on RTL sources
+
+  # Convenience FileSets: `type: systemVerilogSource`, glob the dir. Callers
+  # supply `include` only when the glob doesn't match (multiple packages in one
+  # dir, or a required compile order alphabetical would invert); where a dir maps
+  # 1:1 to a package/module, omit it. sv-module carries NO incdir -- add
+  # `incdirs: [.]` case-by-case when a file `include`s a local .svh. sv-package
+  # keeps the self-incdir since a package typically includes its component .svh.
+  - name: sv-module
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include: [ "*.sv" ]
+
+  - name: sv-package
+    uses: sv-module
+    with:
+      include: [ "*_pkg.sv" ]
+      incdirs: [ . ]

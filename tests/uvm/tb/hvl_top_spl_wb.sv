@@ -22,14 +22,27 @@ module hvl_top_spl_wb;
     import fw_proto_wb_pkg::*;
     import fwvip_wb_pkg::*;
     import fwvip_gpio_pkg::*;
-    import wb_dma_model_pkg::*;
-    import wb_dma_ref_model_pkg::*;
-    import wb_dma_wb_model_pkg::*;
-    import wb_dma_uvm_pkg::*;
+    import wb_dma_env_pkg::*;
     import wb_dma_tests_pkg::*;
 
     // Signal-level DUT + transactors live in hdl_top_spl_wb.
     hdl_top_spl_wb hdl_top_spl_wb();
+
+    // Waveform dump, gated by the +trace runtime plusarg (image must be built
+    // trace-enabled, e.g. the `debug` config's SimElabArgsDbg). The run args
+    // pass +trace=waves.<fmt> so the file name matches the built format;
+    // a bare +trace falls back to waves.fst. Dumping from this top captures the
+    // whole hierarchy, including the DUT in hdl_top_spl_wb.
+    initial begin
+        string tracefile;
+        if ($value$plusargs("trace=%s", tracefile)) begin
+            $dumpfile(tracefile);
+            $dumpvars(0, hvl_top_spl_wb);
+        end else if ($test$plusargs("trace")) begin
+            $dumpfile("waves.fst");
+            $dumpvars(0, hvl_top_spl_wb);
+        end
+    end
 
     // Wall-clock (real seconds) at startup / finish -- for throughput measurement.
     real wc_start;

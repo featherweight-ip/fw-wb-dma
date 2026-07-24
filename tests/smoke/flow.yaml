@@ -6,13 +6,7 @@ fragment:
   # carries wb.proto.files (std_mem_if) and the fw modeling library.
   tasks:
   - name: smoke-tb
-    uses: std.FileSet
-    with:
-      type: systemVerilogSource
-      include:
-      - wb_dma_smoke_tb.sv
-      incdirs:
-      - .
+    uses: sv-module        # single .sv in dir -> glob; incdirs[.] inherited
 
   - name: smoke-img
     uses: hdlsim.vlt.SimImage

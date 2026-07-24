@@ -32,8 +32,8 @@ endclass
 // the engine-facing `wb_dma_ch` objects own, nested here so one offset decode
 // spans the whole map.
 class wb_dma_regs extends fw_reg_block #(32);
-    fw_reg #(bit [31:0]) csr;                  // global CSR (bit0 = PAUSE)
-    fw_reg #(bit [31:0]) int_msk_a, int_msk_b; // per-channel interrupt masks
+    fw_reg #(wb_dma_gcsr_t)   csr;                  // global CSR (PAUSE @ bit0)
+    fw_reg #(wb_dma_intvec_t) int_msk_a, int_msk_b; // per-channel interrupt masks
 
     function new(string name, wb_dma_ch ch[]);
         super.new(name);
@@ -86,10 +86,10 @@ class wb_dma_rf extends fw_component;
         end
     endfunction
 
-    function bit  paused();   return regs.csr.read()[0];                              endfunction
+    function bit  paused();   return regs.csr.read().pause;                           endfunction
     // Level interrupt outputs: any pending source enabled by the mask.
-    function bit  inta();     return |(int_pending & regs.int_msk_a.read()[30:0]);    endfunction
-    function bit  intb();     return |(int_pending & regs.int_msk_b.read()[30:0]);    endfunction
+    function bit  inta();     return |(int_pending & regs.int_msk_a.read().ch);       endfunction
+    function bit  intb();     return |(int_pending & regs.int_msk_b.read().ch);       endfunction
     // Engine hook: record a pending interrupt source for channel c.
     function void raise_int(int unsigned c);
         if (c < n_ch) int_pending[c] = 1'b1;
@@ -154,8 +154,8 @@ class wb_dma_rf extends fw_component;
             // INT_SRC_A/B are READ-ONLY masked snapshots -- reading them does NOT
             // clear anything (faithful to the RTL: int_srca/int_srcb are wires, and
             // the source bits are cleared only by a channel-CSR read, below).
-            12'h0c: data = {1'b0, int_pending & regs.int_msk_a.read()[30:0]};
-            12'h10: data = {1'b0, int_pending & regs.int_msk_b.read()[30:0]};
+            12'h0c: data = {1'b0, int_pending & regs.int_msk_a.read().ch};
+            12'h10: data = {1'b0, int_pending & regs.int_msk_b.read().ch};
             default: begin
                 data = regs.read_val(off);        // sw bus read (register semantics)
                 // RTL semantics (wb_dma_ch_rf: ch_csr_re clears int_src_r): reading

@@ -19,11 +19,7 @@ module hvl_top_rtl;
     import fw_proto_wb_pkg::*;
     import fwvip_wb_pkg::*;
     import fwvip_gpio_pkg::*;
-    import wb_dma_model_pkg::*;
-    import wb_dma_ref_model_pkg::*;
-    import wb_dma_wb_model_pkg::*;
-    import wb_dma_rtl_model_pkg::*;
-    import wb_dma_uvm_pkg::*;
+    import wb_dma_env_pkg::*;
     import wb_dma_tests_pkg::*;
 
     // Signal-level DUT + host xtor + RAMs + interrupt tap live in hdl_top_rtl.

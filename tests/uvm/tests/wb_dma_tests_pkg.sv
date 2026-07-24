@@ -13,8 +13,7 @@
 
 package wb_dma_tests_pkg;
     import uvm_pkg::*;
-    import wb_dma_model_pkg::*;
-    import wb_dma_uvm_pkg::*;
+    import wb_dma_env_pkg::*;
 
     localparam logic [31:0] SRC_BASE = 32'h0000_0000;
     localparam logic [31:0] DST_BASE = 32'h0000_4000;

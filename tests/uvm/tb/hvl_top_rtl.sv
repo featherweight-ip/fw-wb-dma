@@ -53,6 +53,11 @@ module hvl_top_rtl;
             refroot = new("refroot");
             ref_clk = new("ref_clock", refroot, hdl_top_rtl.u_clk);
             refroot.clock.connect(ref_clk);
+            // On this top the DUT is the OpenCores RTL, which has no fw-hdl
+            // sites at all -- so the observable stream comes from the passive
+            // SPL reference running beside it. Same events, same names, and
+            // the pairing with the RTL waveform is the point (design §7).
+            void'(fw_dbg_console::attach(refroot, "ref"));
             refroot.start();
             uvm_config_db #(wb_dma_ref_model)::set(null, "*", "ref_model", refroot);
             fwvip_wb_monitor_config_p #(virtual wb_monitor_xtor_if #(32, 32))::set(
@@ -91,4 +96,8 @@ module hvl_top_rtl;
         wc_end = wc_now();
         $display("[PERF] %m FINISH wallclock=%0.3f s  ELAPSED=%0.3f s", wc_end, wc_end - wc_start);
     end
+    // The site catalog + field schema, on +fw_dbg_catalog. At END of run:
+    // a site's schema is written on its first activation, not at elaboration.
+    final fw_dbg_console::dump_catalog();
+
 endmodule

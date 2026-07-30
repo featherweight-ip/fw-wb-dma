@@ -9,145 +9,234 @@ fragment:
   # hdlsim.vlt.SimLibUVM locates UVM via $UVM_HOME).
   tasks:
 
- 
-  # ---- Shared UVM env library + per-view images (base-* primitives) ------------
-  # One base-uvm-env builds the env+tests SimLib ONCE. The env is a single package
-  # (wb_dma_env_pkg), so the blanket *_pkg.sv glob sequences it fine; env-src only
-  # needs to inject the upstream deps the package imports: `spl` (wb_dma_spl_pkg +
-  # fw_hdl/fw_proto_* via its own needs), the wb + gpio UVM VIP sources, and
-  # wb_ram_slv (the interface rtl_model binds via `virtual wb_ram_slv`). These are
-  # added to env-src (not env) so their files precede the package that imports them.
+  # ---- Per-view DUT sources ----------------------------------------------------
+  # What each DUT view adds ON TOP OF the shared env library, which already
+  # carries the class model (`spl`). The TLM view adds nothing -- the class
+  # model IS the DUT; the WB view adds the wrapper + Wishbone kit; the RTL view
+  # adds the OpenCores design on top of that.
+  #
+  # One aggregator per view lets the image body select its sources with a single
+  # deferred need (`view-src-${{ this.view }}`) instead of one image task per
+  # view. Listing `spl` here as well would compile the class model twice --
+  # Verilator MODDUP -- which is what a first pass at this did.
   - { name: uvm-rtl-ram-src, uses: sv-module, with: {base: tb, include: [ wb_ram_slv.sv ] } }
 
+  - { name: view-src-tlm, passthrough: all, consumes: none }
+  - { name: view-src-wb,  passthrough: all, consumes: none, needs: [spl-rtl] }
+  - { name: view-src-rtl, passthrough: all, consumes: none, needs: [spl-rtl, rtl] }
+
+  # ---- Shared UVM env library, one per build variant ---------------------------
+  # A select family, not a single task: the env library is COMPILED, so it is as
+  # much a build-variant artifact as the images are. Two cells (opt, dbg), each
+  # shared by all three views -- `dfm run tests` compiles one env library, not
+  # three, and `-D build=dbg` compiles the other one instead.
+  #
+  # Feed the design-package deps AND the compile-flag DataItem through the
+  # compound INPUT (not a subtask override): compound needs -> input -> pre-deps
+  # -> env-src -> ... -> env-lib, so the dep files (and incdirs) precede the env
+  # pkgs that import them, and the flags reach the SimLib compile. The dv.uvm
+  # package is flag-agnostic; the leaf injects the holder here.
   - name: uvm-env
-    uses: dv.uvm.env-base
-    # Feed the design-package deps AND the leaf's compile-flag DataItem through the
-    # compound INPUT (not a subtask override): compound needs -> input -> pre-deps
-    # -> env-src -> ... -> env-lib, so the dep files (and incdirs) precede the env
-    # pkgs that import them, and flags-sim-comp reaches the SimLib compile. The
-    # dv.uvm package is flag-agnostic; the leaf injects flags-sim-comp here.
-    needs: [spl, org.fwvip.wb.vip-uvm-hvlsrc, org.fwvip.gpio.vip-uvm-hvlsrc, uvm-rtl-ram-src, flags-sim-comp]
-    # env is a single package (wb_dma_env_pkg); env-base's default *_pkg.sv
-    # glob picks it up -- no explicit env_include ordering needed.
+    strategy:
+      select:
+        axes:
+          build: [opt, dbg]
+        default: {build: "${{ build }}"}
+      body:
+      - uses: dv.uvm.env-base
+        needs:
+        - spl
+        - org.fwvip.wb.vip-uvm-hvlsrc
+        - org.fwvip.gpio.vip-uvm-hvlsrc
+        - uvm-rtl-ram-src
+        - "flags-comp-${{ this.build }}"
+        # env is a single package (wb_dma_env_pkg); env-base's default *_pkg.sv
+        # glob picks it up -- no explicit env_include ordering needed.
 
-  # SPL (TLM) image: shared env-lib + hvl_top_spl. No extra DUT sources -- the
-  # class model lives in the env-lib (wb_dma_spl_pkg, pulled in via `spl`).
-  - name: uvm-img
-    uses: dv.uvm.tb-img
-    # env-lib flows in from uvm-env; the leaf injects the image compile/elab flags.
-    needs: [uvm-env, flags-sim-comp, flags-sim-elab]
+  #============================================================================
+  # The simulation-image FAMILY.
+  #
+  # Six cells -- 3 DUT views x 2 build variants -- from one body. Each is an
+  # independently addressable artifact:
+  #
+  #   dfm run sim-img                    # the project default (tlm, opt)
+  #   dfm run sim-img --view rtl         # one cell
+  #   dfm run sim-img.rtl.dbg            # the same cell, by name
+  #   dfm run sim-img -D build=dbg       # project-wide variant
+  #
+  # A cell nobody asks for is never built, and a cell two consumers ask for is
+  # built once -- which is what lets the regression compile one image per view
+  # while six cases run on them.
+  #
+  # THE THREE VIEWS:
+  #   tlm  -- the class model itself (hvl_top_spl). No signal-level DUT.
+  #   wb   -- the same env against the wb_dma_spl wrapper over Wishbone.
+  #   rtl  -- the OpenCores wb_dma_top, its master (data) ports backed by
+  #           combinational 0-wait-state SV RAMs (wb_ram_slv) via
+  #           wb_dma_rtl_model, so the engine is proven against a same-cycle
+  #           memory rather than a variable-latency transactor. The per-channel
+  #           HS bus is tied off in hvl_top_rtl, so only sw_copy / arb run here.
+  #============================================================================
+  - root: sim-img
+    desc: Simulation images -- one per (view, build) pair
     with:
-      tb_include: [hdl_top_spl.sv, hvl_top_spl.sv]
-      top: [hvl_top_spl]
-
-  # ---- Signal-level (Wishbone) UVM path: same env+tests, wb_dma_spl DUT --------
-  # The WB model pkg brings in the wrapper + Wishbone kit (via spl-rtl) on top of
-  # the shared env sources.
-  - name: uvm-wb-img
-    uses: dv.uvm.tb-img
-    needs: [uvm-env, spl-rtl, flags-sim-comp, flags-sim-elab]
-    with:
-      tb_include: [hdl_top_spl_wb.sv, hvl_top_spl_wb.sv]
-      top: [hvl_top_spl_wb]
-
-  # (WB scenarios are covered by the partitioned `uvm-universal` matrix below --
-  # WB runs the universal, non-handshake tests. See the suite at end of file.)
-
-  # ---- Signal-level (Wishbone) UVM path: same env+tests, wb_dma_top RTL DUT -----
-  # Reuses the host register path + GPIO->int_changed seam from the WB model, but
-  # backs the DUT's master (data) ports with combinational 0-wait-state SV RAMs
-  # (wb_ram_slv) via wb_dma_rtl_model -- the wb_dma engine is proven against a
-  # same-cycle memory, not a variable-latency transactor. The per-channel HS bus is
-  # stubbed in hvl_top_rtl (tied off), so only sw_copy / arb run here. SimLibUVM
-  # MUST precede the GPIO VIP (uvm base types first).
-  # RTL image: OpenCores wb_dma_top (rtl) + wb_dma_spl transactor modules (spl-rtl).
-  # wb_ram_slv already rides in the shared env-lib. hvl_top_rtl stubs the per-chan
-  # HS bus, so only sw_copy / arb run here.
-  - name: uvm-rtl-img
-    uses: dv.uvm.tb-img
-    needs: [uvm-env, rtl, spl-rtl, flags-sim-comp, flags-sim-elab]
-    with:
-      tb_include: [hdl_top_rtl.sv, hvl_top_rtl.sv]
-      top: [hvl_top_rtl]
-      # .v -> Verilog-2001 (the RTL uses `int` as a port name, reserved in SV);
-      # --no-assert: the RTL's parallel_case/full_case pragmas trip Verilator's
-      # $stop on the all-zero t=0 state before the first clocked reset load.
-      sim_args: ["+1364-2001ext+v", "--no-assert"]
-
-  # (RTL scenarios are covered by the partitioned `uvm-universal` matrix below --
-  # RTL runs the universal, non-handshake tests. See the suite at end of file.)
-
-  # ---- throughput benchmark: same wb_dma_perf_test on all three DUT flavours ----
-  # Wall-clock-bounded (runs >= PERF_SECS); +PERF disables the sim-time watchdog.
-  # Reports xfers/s + Mword/s; the tops also print START/FINISH wall-clock.
-  - root: uvm-perf
-    uses: hdlsim.vlt.SimRun
-    needs: [uvm-img]
-    with:
-      plusargs: [UVM_TESTNAME=wb_dma_perf_test, PERF, PERF_LABEL=TLM, PERF_SECS=5]
-
-  - root: uvm-wb-perf
-    uses: hdlsim.vlt.SimRun
-    needs: [uvm-wb-img]
-    with:
-      plusargs: [UVM_TESTNAME=wb_dma_perf_test, PERF, PERF_LABEL=SPL_XTOR, PERF_SECS=5]
-
-  - root: uvm-rtl-perf
-    uses: hdlsim.vlt.SimRun
-    needs: [uvm-rtl-img]
-    with:
-      plusargs: [UVM_TESTNAME=wb_dma_perf_test, PERF, PERF_LABEL=RTL, PERF_SECS=5]
+      view:
+        type: str
+        value: tlm
+        cli: true
+        values: [tlm, wb, rtl]
+        doc: DUT view to build
+      build:
+        type: str
+        value: "${{ build }}"     # defaults from the project-wide control
+        cli: true
+        values: [opt, dbg]
+        doc: Build variant
+    strategy:
+      select:
+        axes:
+          view:  [tlm, wb, rtl]
+          build: [opt, dbg]
+        default: {view: "${{ view }}", build: "${{ build }}"}
+      body:
+      - uses: dv.uvm.tb-img
+        needs:
+        - "uvm-env.${{ this.build }}"        # the matching env library cell
+        - "view-src-${{ this.view }}"        # this view's DUT sources
+        - "flags-comp-${{ this.build }}"
+        - "flags-elab-${{ this.build }}"
+        with:
+          tb_include: "${{ view_tb[this.view] }}"
+          top:        "${{ view_top[this.view] }}"
+          sim_args:   "${{ view_sim_args[this.view] }}"
 
   #============================================================================
   # Partitioned regression suite.
   #
   # Tests split by what each model VERSION can drive:
   #   * UNIVERSAL (non-handshake) -- sw_copy / arb / arb_eq / err -- run on ALL
-  #     three model images (TLM class-model, WB signal-level, RTL).
-  #   * HS-HANDSHAKE -- hw_hs / hol -- run on the TLM class-model ONLY; the WB and
-  #     RTL tops stub the per-channel hardware-handshake bus (see hvl_top_spl_wb /
-  #     hvl_top_rtl), so those tests "stay on the TLM top".
+  #     three views.
+  #   * HS-HANDSHAKE -- hw_hs / hol -- run on the TLM class-model ONLY; the WB
+  #     and RTL tops stub the per-channel hardware-handshake bus (see
+  #     hvl_top_spl_wb / hvl_top_rtl), so those tests "stay on the TLM top".
   #
-  # `uvm-universal` is a 2D matrix over (image x case): the case list is written
-  # ONCE and each cell wires to its own image via `needs: ["${{ this.image }}"]`
-  # (matrix-driven needs). arb/err use channel-keyed compare (+CMP_BY_CHANNEL);
-  # arb_eq adds +CMP_NO_ORDER (round-robin: count, not order); hw_hs/hol +NO_CMP.
+  # A suite IS all of its cases, so it stays a `matrix:` -- the fan-out meaning.
+  # Each cell reaches its image by NAME (`sim-img.<view>.<build>`); there is no
+  # alias map between the axis value and the image task, because the cell name
+  # is derived from the axis value by construction.
+  #
+  # `${{ build }}` here is the PACKAGE variable, not a suite axis: the whole
+  # regression runs on one variant, chosen with `-D build=dbg`.
+  #
+  # arb/err use channel-keyed compare (+CMP_BY_CHANNEL); arb_eq adds
+  # +CMP_NO_ORDER (round-robin: count, not order); hw_hs/hol +NO_CMP.
+  #
+  # Each cell carries a short `name` -- that is the key `dfm run tests --tests
+  # <name>` selects on, and the `image` axis is what `--views` selects on
+  # (hdlsim.SimSuiteReport sets `view_axis: image`). Selection prunes cells at
+  # graph build, so an unselected case is never built -- and neither is the
+  # image cell only it needed.
   #============================================================================
   - name: uvm-universal
     strategy:
       matrix:
-        image: "${{ images }}"        # alias list (default tlm,wb,rtl; -D images=... to subset)
+        image: "${{ images }}"        # tlm,wb,rtl (default); -D images=... to subset
         case:
-        - { testname: wb_dma_sw_copy_test, plusargs: [] }
-        - { testname: wb_dma_arb_test,     plusargs: [CMP_BY_CHANNEL] }
-        - { testname: wb_dma_arb_eq_test,  plusargs: [CMP_BY_CHANNEL, CMP_NO_ORDER] }
-        - { testname: wb_dma_err_test,     plusargs: [CMP_BY_CHANNEL] }
+        - { name: sw_copy, testname: wb_dma_sw_copy_test, plusargs: [] }
+        - { name: arb,     testname: wb_dma_arb_test,     plusargs: [CMP_BY_CHANNEL] }
+        - { name: arb_eq,  testname: wb_dma_arb_eq_test,  plusargs: [CMP_BY_CHANNEL, CMP_NO_ORDER] }
+        - { name: err,     testname: wb_dma_err_test,     plusargs: [CMP_BY_CHANNEL] }
     body:
-    - name: "${{ this.image }}-${{ this.case.testname }}"
+    - name: "${{ this.image }}-${{ this.case.name }}"
       uses: hdlsim.vlt.SimUVMCase
-      needs: [ "${{ image_of[this.image] }}" ]   # alias -> image task
+      needs:
+      - "sim-img.${{ this.image }}.${{ build }}"
+      - "flags-run-${{ build }}"
       with:
+        name: "${{ this.image }}-${{ this.case.name }}"
         testname: "${{ this.case.testname }}"
         plusargs: "${{ this.case.plusargs }}"
 
-  # HS-handshake tests are TLM-only -- included only when the TLM image is
+  # HS-handshake tests are TLM-only -- included only when the TLM view is
   # selected (so `-D images=rtl` doesn't drag in a TLM build).
+  # The `image` axis is a literal [tlm] rather than absent, so `--views` can
+  # select over this suite the same way it does over uvm-universal (an absent
+  # axis is unfilterable, and `--views rtl` would have quietly run the HS tests
+  # anyway). The `iff:` stays for the older `-D images=` package-variable path,
+  # which does not reach a task parameter.
   - name: uvm-hs-only
     iff: "${{ images | contains('tlm') }}"
     strategy:
       matrix:
+        image: [tlm]
         case:
-        - { testname: wb_dma_hw_hs_test, plusargs: [NO_CMP] }
-        - { testname: wb_dma_hol_test,   plusargs: [NO_CMP] }
+        - { name: hw_hs, testname: wb_dma_hw_hs_test, plusargs: [NO_CMP] }
+        - { name: hol,   testname: wb_dma_hol_test,   plusargs: [NO_CMP] }
     body:
-    - name: "tlm-${{ this.case.testname }}"
+    - name: "${{ this.image }}-${{ this.case.name }}"
       uses: hdlsim.vlt.SimUVMCase
-      needs: [uvm-img]
+      needs:
+      - "sim-img.tlm.${{ build }}"
+      - "flags-run-${{ build }}"
       with:
+        name: "${{ this.image }}-${{ this.case.name }}"
         testname: "${{ this.case.testname }}"
         plusargs: "${{ this.case.plusargs }}"
 
-  - root: uvm-tests
-    desc: Full regression gate -- universal tests on all models + HS tests on TLM
-    uses: hdlsim.SimSuiteReport
-    needs: [uvm-universal, uvm-hs-only]
+  # ---- observable events: the model's own execution, as a stream ---------------
+  # Same arbitration test the regression runs, with the debug facility switched
+  # on. `arb` is the interesting scenario precisely because it is the one where
+  # "why did MY channel not get serviced" is a real question -- the de.arb record
+  # answers it with the ready-vector and a per-loser reason.
+  #
+  #   dfm run uvm-trace                          # 3 = arbitration, arming, waits
+  #   dfm run uvm-trace -D dbg_level=5           # + every register access
+  #   dfm run uvm-trace -D dbg_clamp=dut.de:5    # deep on the engine only
+  #   dfm run uvm-trace -D dbg_test=wb_dma_err_test   # bus errors, with the address
+  #
+  # Two more axes, for when the flood is one site rather than one subsystem:
+  #   dfm run uvm-trace -D dbg_mute=de.arb       # keep the engine, drop arbitration
+  #   dfm run uvm-trace -D dbg_subj=de.arb:1,2   # arbitration, but only ch1/ch2
+  #   dfm run uvm-trace -D dbg_subj=2            # every site, but only about ch2
+  #
+  # Deliberately NOT in the `tests` aggregate: it produces a large stream and
+  # asserts nothing the functional cases do not already assert. What keeps the
+  # instrumentation honest in regression is that every case above compiles it.
+  - root: uvm-trace
+    uses: hdlsim.vlt.SimRun
+    needs: [sim-img.tlm.opt, flags-run-opt]
+    with:
+      plusargs:
+      - "UVM_TESTNAME=${{ dbg_test }}"
+      - CMP_BY_CHANNEL
+      - fw_dbg
+      - "fw_dbg_level=${{ dbg_level }}"
+      - "fw_dbg_clamp=${{ dbg_clamp }}"
+      - "fw_dbg_mute=${{ dbg_mute }}"
+      - "fw_dbg_subj=${{ dbg_subj }}"
+      - "${{ dbg_catalog }}"
+
+  # ---- throughput benchmark: same wb_dma_perf_test on all three DUT flavours ----
+  # Wall-clock-bounded (runs >= PERF_SECS); +PERF disables the sim-time watchdog.
+  # Reports xfers/s + Mword/s; the tops also print START/FINISH wall-clock.
+  # These name the OPTIMIZED cell explicitly -- a throughput number measured on a
+  # debug build would be meaningless, so this is one place the project-wide
+  # `build` control deliberately does not reach.
+  - root: uvm-perf
+    uses: hdlsim.vlt.SimRun
+    needs: [sim-img.tlm.opt, flags-run-opt]
+    with:
+      plusargs: [UVM_TESTNAME=wb_dma_perf_test, PERF, PERF_LABEL=TLM, PERF_SECS=5]
+
+  - root: uvm-wb-perf
+    uses: hdlsim.vlt.SimRun
+    needs: [sim-img.wb.opt, flags-run-opt]
+    with:
+      plusargs: [UVM_TESTNAME=wb_dma_perf_test, PERF, PERF_LABEL=SPL_XTOR, PERF_SECS=5]
+
+  - root: uvm-rtl-perf
+    uses: hdlsim.vlt.SimRun
+    needs: [sim-img.rtl.opt, flags-run-opt]
+    with:
+      plusargs: [UVM_TESTNAME=wb_dma_perf_test, PERF, PERF_LABEL=RTL, PERF_SECS=5]
+

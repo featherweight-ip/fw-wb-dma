@@ -34,6 +34,9 @@
         virtual function void produce_to(fw_event_set s); \
             m_imp.NAME``_produce_to(s); \
         endfunction \
+        virtual function int unsigned dbg_site(); \
+            return m_imp.NAME``_dbg_site(); \
+        endfunction \
     endclass \
     NAME``_imp_t NAME
 

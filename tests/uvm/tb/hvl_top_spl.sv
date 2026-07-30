@@ -48,6 +48,10 @@ module hvl_top_spl;
         wc_start = wc_now();
         $display("[PERF] %m START  wallclock=%0.3f s", wc_start);
         root.clock.connect(clk_dom);        // seat the DUT's clock domain
+        // Observable events: wired unconditionally, active only under +fw_dbg.
+        // Attached to the DUT root ONLY -- the always-on reference runs the same
+        // engine, and two interleaved copies of every event is not a trace.
+        void'(fw_dbg_console::attach(root, "dut"));
         root.start();     // do_build -> do_connect -> do_run (forks the mover); returns
         uvm_config_db #(wb_dma_model_base)::set(null, "*", "model", root);
 
@@ -93,4 +97,8 @@ module hvl_top_spl;
             $display("[TAP] DUT ref_model master accesses: IF0=%0d IF1=%0d",
                      root.tap0.m_count, root.tap1.m_count);
     end
+    // The site catalog + field schema, on +fw_dbg_catalog. At END of run:
+    // a site's schema is written on its first activation, not at elaboration.
+    final fw_dbg_console::dump_catalog();
+
 endmodule

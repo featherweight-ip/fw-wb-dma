@@ -74,7 +74,12 @@ class wb_dma_de extends fw_component implements fw_runnable;
         // Collect the heterogeneous wait list -- every CSR plus every connected HS
         // port -- into the wake set. Each entry is just an fw_awaitable_if; the loop
         // is source-agnostic.
-        m_wake = new();
+        // Named and parented: the engine's one blocking point is the first thing
+        // you want to see when the DMA appears to do nothing, and `this` is what
+        // supplies the debug context (the set is created in run(), after
+        // do_build(), so it pulls the resolved context rather than waiting to be
+        // handed one).
+        m_wake = new("de.wake", this);
         m_wake.add(rf.regs.csr);                            // global CSR (PAUSE)
         foreach (rf.ch[i]) m_wake.add(rf.ch[i].regs.csr);
         foreach (hs[i]) if (hs[i].is_connected()) begin
@@ -82,27 +87,44 @@ class wb_dma_de extends fw_component implements fw_runnable;
             m_wake.add(m_hs[i]);
         end
 
-        // `fw_trace_loop_begin("service")           // one iteration per arbitration round
         forever begin
             automatic int c;
+            `fw_op_span(sop)
+            // Row 11 (`de.service`): one arbitration round, from re-arbitration
+            // to the end of whatever it decided to do -- INCLUDING the wait when
+            // nothing was ready. Opening before `next()` rather than after is
+            // what makes an idle round a zero-work span of measurable duration
+            // instead of a gap, and it gives the hang dump a named frame to
+            // report ("inside de.service") rather than bare `.run`.
+            //
+            // The winner is not known at open, so it arrives by retro-tag.
+            `fw_op_begin(dbg_if(), FW_L_OP, "de.service", sop)
+            `fw_op_opened
             // Flush accumulated data-availability delays BEFORE re-arbitrating, so
             // the engine observes the latest register state (the CPU's channel
             // arming) at this synchronization point. This is NOT time generation:
             // the flushed time IS the sum of the just-serviced chunk's data delays.
             if (qk != null) qk.sync();
-            c = next();
-            // `fw_trace_point_begin("arb")          // outcome of this round
-              // `fw_trace_param_int(c)              //   winner (-1 == nothing ready)
-              // `fw_trace_param_int(last_ch)        //   round-robin pointer
-              // `fw_trace_cond("paused", rf.paused())
-            // `fw_trace_point_end
+            c = next();          // emits de.arb -- winner, ready-vector, loser reasons
+            // Only a round that GRANTED belongs to a channel. An idle round is
+            // deliberately left with no flow key and no subject, for the same
+            // reason `de.arb` names no subject when nobody wins: "nothing was
+            // serviced" is not an event about a channel, and tagging it with one
+            // would put it in the wrong bucket for every downstream filter.
+            if (c >= 0) begin
+                `fw_op_retag(sop, c)
+                `fw_op_subject(sop, c)
+            end
             if (c < 0) begin
                 m_wake.wait_any();           // sleep until a CSR write or an HS request
-                continue;
+            end else begin
+                service_chunk(c, if0, if1, irqif);
             end
-            service_chunk(c, if0, if1, irqif);
+            `fw_op_close(dbg_if(), sop)
+                `fw_field_i8_as("winner", c)
+                `fw_op_outcome((c < 0) ? FW_OUT_STALL : FW_OUT_OK)
+            `fw_op_end(sop)
         end
-        // `fw_trace_loop_end("service")
     endtask
 
     // ---- register-centric arbitration (spec §3.1) ----------------------------
@@ -118,62 +140,206 @@ class wb_dma_de extends fw_component implements fw_runnable;
         return m_hs[i].has_req();                     // ...and a pending request
     endfunction
 
+    // WHY channel i is not ready -- the same guard as ready(), reported instead of
+    // returning. Codes are site-local and 1-based, so 0 keeps its "this candidate
+    // won" meaning; the site's field schema is what names them:
+    //   1 not_busy   -- not armed (no transfer loaded)
+    //   2 stopped    -- host wrote STOP
+    //   3 errored    -- a bus error aborted it
+    //   4 no_hs_dev  -- HW-handshake channel with no device connected
+    //   5 no_hs_req  -- HW-handshake channel whose device has not requested
+    //   6 lower_prio -- ready, but a higher-priority channel was available
+    //   7 lost_rr    -- ready and at the winning priority, but round-robin
+    //                   reached another channel first
+    //   8 paused     -- the global PAUSE bit stopped the whole engine
+    local function int loss_reason(int i, int best_pri, int winner, bit paused);
+        wb_dma_csr_t csr = rf.ch[i].regs.csr.read();
+        if (i == winner)      return 0;
+        if (paused)           return 8;
+        if (!csr.busy)        return 1;
+        if (csr.stop)         return 2;
+        if (csr.err)          return 3;
+        if (csr.mode) begin
+            if (m_hs[i] == null)   return 4;
+            if (!m_hs[i].has_req()) return 5;
+        end
+        if (int'(csr.prio) < best_pri) return 6;
+        return 7;
+    endfunction
+
     function int prio_of(int i);  return int'(rf.ch[i].regs.csr.read().prio);  endfunction
 
     // Index of the next channel to service, or -1 if none (or globally paused):
     // highest CSR priority first, then round-robin among equal-priority readies.
     local function int next();
-        int n = rf.n_ch;
+        int n        = rf.n_ch;
         int best_pri = -1;
+        int winner   = -1;
+        bit paused   = rf.paused();
 
-        // `fw_trace_enter("next")
+        if (!paused) begin
+            foreach (rf.ch[i])
+                if (ready(i) && prio_of(i) > best_pri)
+                    best_pri = prio_of(i);
 
-        if (rf.paused()) return -1;
-        foreach (rf.ch[i])
-            if (ready(i) && prio_of(i) > best_pri)
-                best_pri = prio_of(i);
-        if (best_pri < 0) return -1;
-        for (int k = 1; k <= n; k++) begin
-            int idx = (last_ch + k) % n;
-            if (ready(idx) && prio_of(idx) == best_pri) begin
-                last_ch = idx;
-                // `fw_trace_leave_begin("next")
-                  // `fw_trace_return_int(idx)
-                // `fw_trace_leave_end
-                return idx;
+            if (best_pri >= 0) begin
+                for (int k = 1; k <= n; k++) begin
+                    int idx = (last_ch + k) % n;
+                    if (ready(idx) && prio_of(idx) == best_pri) begin
+                        last_ch = idx;
+                        winner  = idx;
+                        break;
+                    end
+                end
             end
         end
 
-        // `fw_trace_leave_begin("next")
-          // `fw_trace_return_int(-1)
-        // `fw_trace_leave_end
-        return -1;
+        // The arbitration record: the winner AND why every loser lost.
+        //
+        // This is the site the design doc singles out, and the reason is that the
+        // ready-vector is computed here and then thrown away. Nothing downstream
+        // can reconstruct it: a channel that is armed but never serviced leaves no
+        // trace at all, so "channel 3 is starving" and "channel 3 was never
+        // actually ready" are indistinguishable from the outside -- and they have
+        // completely different fixes. `ready_vec` mirrors the RTL's
+        // wb_dma_ch_arb.req[30:0], which is what lets the same record be
+        // reconstructed from a waveform (design §11).
+        `fw_ev_decision(dbg_if(), FW_L_OP, "de.arb")
+            `fw_field_b(paused)
+            `fw_field_u8(last_ch)
+            `fw_field_i8(best_pri)
+            `fw_field_h32_as("ready_vec", ready_vec())
+            if (winner >= 0) begin
+                `fw_dec_winner(winner)
+                // The GRANTED channel is this round's endpoint, which is what
+                // makes `+fw_dbg_subj=de.arb:1,2` mean "the rounds that served
+                // channel 1 or 2". A round that grants nobody deliberately
+                // names no subject and therefore survives every subject filter:
+                // "nothing was serviced" is the answer to a different question,
+                // and quietly filtering it out would hide the case someone
+                // narrowing the trace is most likely hunting.
+                `fw_subject(winner)
+            end
+            foreach (rf.ch[i]) begin
+                `fw_dec_cand(i, loss_reason(i, best_pri, winner, paused))
+            end
+        `fw_ev_end
+
+        return winner;
+    endfunction
+
+    // The per-channel ready bitmap, in the RTL's shape (wb_dma_ch_arb.req[30:0]).
+    // Built only inside an enabled arbitration site -- it costs a read of every
+    // channel CSR, which is exactly the kind of payload the emit macros exist to
+    // keep out of a disabled build.
+    local function bit [30:0] ready_vec();
+        bit [30:0] v = '0;
+        foreach (rf.ch[i]) if (i < 31 && ready(i)) v[i] = 1'b1;
+        return v;
     endfunction
 
     // Transfer one chunk of channel c (CHK_SZ words, or all of TOT_SZ when
     // CHK_SZ==0), then settle the channel (chunk-int / done / ARS / error).
+    //
+    // Row 14 (`de.chunk`). This wrapper exists ONLY to make the span
+    // correct-by-construction: the body has four early exits (two bus errors, a
+    // host stop, and the chunk-boundary return), and a span closed by hand at
+    // each of them is a span that will eventually be closed at three of them.
+    // A leaked span is worse than no span -- it holds a pooled context forever
+    // and emits no close, so the operation simply vanishes from the trace.
+    //
+    // Parameters are what is known at ENTRY. `n` (the words this chunk plans to
+    // move) is not: it depends on the HS request that `do_chunk` waits for, and
+    // opening the span after that wait would hide the wait itself -- which is
+    // exactly the "is the device slow or is the DMA slow" question row 15
+    // exists to answer. So `planned` rides on the close, beside `moved`.
     local task automatic service_chunk(int c,
                                        wb_proto_if #(32, 32) if0, wb_proto_if #(32, 32) if1,
                                        wb_dma_irq_if irqif);
+        wb_dma_ch       ch  = rf.ch[c];
+        wb_dma_csr_t    csr = ch.regs.csr.read();
+        wb_dma_sz_t     sz  = ch.regs.sz.read();
+        fw_op_outcome_e oc  = FW_OUT_OK;
+        int             planned = 0, moved = 0;
+        realtime        lt0 = 0;
+        `fw_op_span(op)
+
+        `fw_op_begin(dbg_if(), FW_L_OP, "de.chunk", op)
+            `fw_subject(c)
+            `fw_op_flow(c)
+            `fw_field_u8_as("ch", c)
+            `fw_field_u32_as("chk_sz", sz.chk_sz)
+            `fw_field_u32_as("w_rem", ch.w_rem)
+            `fw_field_b_as("hs", csr.mode)
+            lt0 = (qk != null) ? qk.offset() : 0;   // inside the gate: G2 holds
+        `fw_op_opened
+
+        do_chunk(c, if0, if1, irqif, oc, planned, moved);
+
+        `fw_op_close(dbg_if(), op)
+            `fw_field_u32(planned)
+            `fw_field_u32(moved)
+            // TEMPORAL DECOUPLING makes `dur` a lie on the TLM path, and saying
+            // so is better than shipping a number nobody can trust.
+            //
+            // The engine never advances time; the memories ACCOUNT their
+            // data-availability delays into the quantum keeper, and the engine
+            // FLUSHES them at the next round's sync. So `$time` does not move
+            // inside a chunk and `dur` reads 0 -- the cost is real, it just
+            // lands on the following `de.service` span.
+            //
+            // `accounted` is that cost, measured where it is incurred. On the
+            // wb/rtl paths there is no keeper, `accounted` is 0, and `dur` is
+            // the honest number. Both are emitted because which one is
+            // meaningful depends on the view, and the stream should not require
+            // the reader to know which view produced it.
+            `fw_field_u64_as("accounted", ((qk != null) ? qk.offset() : 0) - lt0)
+            `fw_op_outcome(oc)
+        `fw_op_end(op)
+    endtask
+
+    // The chunk body. Reports how it ended through `oc` so the span above can
+    // close on every path; `planned`/`moved` are the two numbers whose
+    // disagreement IS the diagnosis for a short chunk.
+    local task automatic do_chunk(int c,
+                                  wb_proto_if #(32, 32) if0, wb_proto_if #(32, 32) if1,
+                                  wb_dma_irq_if irqif,
+                                  output fw_op_outcome_e oc,
+                                  output int planned, output int moved);
         wb_dma_ch    ch  = rf.ch[c];
         wb_dma_csr_t csr = ch.regs.csr.read();           // config snapshot for this chunk
         wb_dma_sz_t  sz  = ch.regs.sz.read();
         automatic bit nd = 0, rest = 0;
         automatic int n;
 
-        // `fw_trace_enter_begin("service_chunk")
-          // `fw_trace_param_int(c)
-        // `fw_trace_enter_end
+        oc = FW_OUT_OK;  planned = 0;  moved = 0;
 
         // HW-handshake mode: consume the chunk request the arbiter gated on (it is
         // already pending -- ready() required has_req() -- so wait_req returns at
         // once), latching its nd/rest qualifiers.
         if (csr.mode) begin
+            // Row 15 (`de.hs_req`). The arbiter only picks an HS channel whose
+            // device has already requested, so this normally returns at once and
+            // the span is ~zero. When it is NOT zero, that duration is the whole
+            // answer to "is the device slow or is the DMA slow" -- a question
+            // nothing else in the stream can settle, because a slow device and a
+            // busy engine look identical from outside.
+            `fw_op_span(hsop)
+            `fw_op_begin(dbg_if(), FW_L_OP, "de.hs_req", hsop)
+                `fw_subject(c)
+                `fw_op_flow(c)
+                `fw_field_u8_as("ch", c)
+            `fw_op_opened
             m_hs[c].wait_req(nd, rest);
+            `fw_op_close(dbg_if(), hsop)
+                `fw_field_b(nd)
+                `fw_field_b(rest)
+            `fw_op_end(hsop)
             if (rest && csr.rest_en) ch.load_working();
         end
 
         n = (sz.chk_sz == 0) ? ch.w_rem : min2(int'(sz.chk_sz), ch.w_rem);
+        planned = n;
         ch.set_busy(1'b1);
 
         // The engine NEVER advances time itself -- it is a pure data mover. All
@@ -181,45 +347,116 @@ class wb_dma_de extends fw_component implements fw_runnable;
         // calls (the memory / bus paces each word). Those delays are quantum-
         // decoupled on the TLM path (see wb_dma_mem), so the account is cheap.
 
-        // `fw_trace_point_begin("plan")                 // chunk parameters, resolved
-          // `fw_trace_param_int(n)                      //   words this chunk will move
-          // `fw_trace_param_uint(sz.chk_sz)             //   CHK_SZ (0 == whole transfer)
-          // `fw_trace_param_uint(ch.w_rem)              //   words left before this chunk
-          // `fw_trace_cond("hs_mode", csr.mode)         //   SW (0) vs HW-handshake (1)
-        // `fw_trace_point_end
-
-        // `fw_trace_loop_begin("xfer")                  // one iteration per word moved
         for (int i = 0; i < n; i++) begin
             automatic bit [31:0] data;
             automatic bit        berr;
             if (swptr_stall(ch)) begin
-                // `fw_trace_cond("swptr_stall", 1'b1)   // FIFO backpressure (§3.5)
+                // FIFO backpressure (§3.5): the chunk ends EARLY, short of the n
+                // words it planned to move, and the only evidence is a `break`.
+                // Without this the channel simply appears slow.
+                `fw_ev_decision(dbg_if(), FW_L_OP, "de.swptr_stall")
+                    `fw_subject(c)
+                    `fw_field_u8_as("ch", c)
+                    `fw_field_u32_as("moved", i)
+                    `fw_field_u32_as("planned", n)
+                    `fw_field_h32_as("swptr", ch.regs.swptr.read())
+                    `fw_field_h32_as("src", ch.w_src)
+                    `fw_field_h32_as("dst", ch.w_dst)
+                `fw_ev_end
+                moved = i;                            // short of `planned`
+                oc    = FW_OUT_STALL;                 // ...and the close says why
                 break;                                // stop at software ptr
             end
             begin
                 automatic bit [31:0] wdr;   // write response data (ignored)
                 wb_proto_if #(32, 32) src = csr.src_sel ? if1 : if0;
                 wb_proto_if #(32, 32) dst = csr.dst_sel ? if1 : if0;
-                // `fw_trace_point_begin("word")         // per-beat working state
-                  // `fw_trace_param_int(i)
-                  // `fw_trace_param_uint(ch.w_src)      //   source address this beat
-                  // `fw_trace_param_uint(ch.w_dst)      //   dest address this beat
-                // `fw_trace_point_end
+                // Row 17 (`de.beat`): one word, both bus accesses.
+                //
+                // FW_L_DETAIL, not FW_L_OP, and that is not a small choice: this
+                // fires once per word, so at the default level it is absent and
+                // at level 4 a single large transfer will dominate the stream.
+                // That is the correct trade -- per-beat latency attribution is
+                // exactly what you want when you have narrowed the question to
+                // one chunk, and exactly what you do not want before then.
+                //
+                // It also opens BEFORE the accesses and closes after, so once
+                // D-6 splices the bus edge the two master operations nest inside
+                // it and per-beat latency attribution costs nothing extra.
+                `fw_op_span(bop)
+                `fw_op_begin(dbg_if(), FW_L_DETAIL, "de.beat", bop)
+                    `fw_subject(c)
+                    `fw_op_flow(c)
+                    `fw_op_flow(i)
+                    `fw_field_u32_as("word", i)
+                    `fw_field_h32_as("src", ch.w_src)
+                    `fw_field_h32_as("dst", ch.w_dst)
+                `fw_op_opened
                 src.access(ch.w_src, 32'h0, 4'hf, 1'b0, data, berr);   // read
-                if (berr) begin /* `fw_trace_cond("berr_rd", 1'b1) */ fail(ch, irqif); return; end
+                if (berr) begin
+                    // The channel errors and raises an interrupt, but the ADDRESS
+                    // that faulted is consumed here and never stored anywhere --
+                    // and it is the only thing that tells you whether the source
+                    // pointer, the increment, or the memory map is wrong.
+                    // Read and write get SEPARATE sites rather than one site with
+                    // a phase field: the direction is the first thing you want to
+                    // know, and a site name carries it for free.
+                    `fw_error_begin(dbg_if(), "de.berr_rd")
+                        `fw_subject(c)
+                        `fw_field_u8_as("ch", c)
+                        `fw_field_h32_as("addr", ch.w_src)
+                        `fw_field_u32_as("word", i)
+                    `fw_ev_end
+                    moved = i;
+                    oc    = FW_OUT_ERROR;
+                    `fw_op_close(dbg_if(), bop)
+                        `fw_op_outcome(FW_OUT_ERROR)
+                    `fw_op_end(bop)
+                    fail(ch, irqif); return;
+                end
                 dst.access(ch.w_dst, data, 4'hf, 1'b1, wdr, berr);     // write
-                if (berr) begin /* `fw_trace_cond("berr_wr", 1'b1) */ fail(ch, irqif); return; end
+                if (berr) begin
+                    `fw_error_begin(dbg_if(), "de.berr_wr")
+                        `fw_subject(c)
+                        `fw_field_u8_as("ch", c)
+                        `fw_field_h32_as("addr", ch.w_dst)
+                        `fw_field_u32_as("word", i)
+                    `fw_ev_end
+                    moved = i;
+                    oc    = FW_OUT_ERROR;
+                    `fw_op_close(dbg_if(), bop)
+                        `fw_op_outcome(FW_OUT_ERROR)
+                    `fw_op_end(bop)
+                    fail(ch, irqif); return;
+                end
+                `fw_op_close(dbg_if(), bop)
+                    `fw_field_h32(data)
+                `fw_op_end(bop)
             end
             if (csr.inc_src) ch.advance_src();
             if (csr.inc_dst) ch.advance_dst();
             ch.w_rem--;
             // STOP is host-writable mid-transfer, so read it fresh (§4.4.1).
             if (ch.regs.csr.read().stop) begin
-                // `fw_trace_cond("host_stop", 1'b1)
+                // A host abort mid-transfer. The channel ends up errored, which is
+                // indistinguishable from a bus error unless the abort itself says
+                // so -- and "did software stop this, or did the memory fault?" is
+                // the first fork in diagnosing a failed transfer.
+                `fw_warn_begin(dbg_if(), "de.host_stop")
+                    `fw_subject(c)
+                    `fw_field_u8_as("ch", c)
+                    `fw_field_u32_as("moved", i + 1)
+                    `fw_field_u32_as("planned", n)
+                    `fw_field_u32_as("remaining", ch.w_rem)
+                `fw_ev_end
+                moved = i + 1;
+                oc    = FW_OUT_ABORTED;
                 fail(ch, irqif); return;
             end
         end
-        // `fw_trace_loop_end("xfer")
+        // Only the paths that ran to completion moved all `n`; the early exits
+        // above each recorded what they actually got through.
+        if (oc == FW_OUT_OK) moved = n;
 
         if (csr.mode) begin
             m_hs[c].ack();                               // acknowledge the chunk (§3.8)
@@ -228,27 +465,36 @@ class wb_dma_de extends fw_component implements fw_runnable;
         // More chunks remain in this transfer: optional chunk interrupt, then
         // re-arbitrate (return to the loop).
         if (sz.chk_sz != 0 && ch.w_rem != 0) begin
-            // `fw_trace_point_begin("chunk_more")          // chunk boundary, transfer continues
-              // `fw_trace_param_uint(ch.w_rem)
-              // `fw_trace_cond("int", csr.ine_chk_done)
-            // `fw_trace_point_end
             if (csr.ine_chk_done) raise(ch, c, CAUSE_CHUNK, irqif);
             return;
         end
 
         // TOT_SZ exhausted -> transfer complete. ARS is capability-gated (App. A).
         if ((ch.cap_ars & csr.ars) && !ch.regs.csr.read().stop) begin
-            // `fw_trace_cond("auto_restart", 1'b1)         // ARS: reload and keep going (§3.2.1)
             ch.load_working();
         end else begin
             ch.set_busy(1'b0); ch.set_done(1'b1);
             ch.clr_en();                                 // HW clears CH_EN on done
-            // `fw_trace_cond("done", 1'b1)                 // transfer complete
+            // Row 23 (`de.xfer_done`): the close of the TRANSFER, which is not a
+            // span any one thread holds -- it is opened by `rf.arm` on the host
+            // thread and closed here on the engine thread. That is precisely
+            // what derived flow keys are for: the two records carry the same
+            // key and the join happens downstream, with no handle passing
+            // between the actors (a handle could never be reconstructed from
+            // RTL, and the whole point of the key is that it can).
+            //
+            // `chunks` is deliberately NOT a field: it is the number of
+            // `de.chunk` closes carrying this flow key, which a decoder counts.
+            // Emitting it would be emitting the recoverable (G5).
+            `fw_ev_op(dbg_if(), FW_L_TXN, "de.xfer_done", FW_OP_ENDED)
+                `fw_subject(c)
+                `fw_op_flow(c)
+                `fw_field_u8_as("ch", c)
+                `fw_field_u32_as("words", sz.tot_sz)
+                `fw_op_outcome(FW_OUT_OK)
+            `fw_ev_end
             if (csr.ine_done) raise(ch, c, CAUSE_DONE, irqif);
         end
-
-        // `fw_trace_leave("service_chunk");
-
     endtask
 
     // Abort the channel with an error (bus error or host STOP).
@@ -268,6 +514,18 @@ class wb_dma_de extends fw_component implements fw_runnable;
             CAUSE_ERR:   ch.set_int_err();
             default: ;
         endcase
+        // Row 24 (`de.raise_int`): cause publication, emitted HERE rather than
+        // in rf because this is the only place the cause is known -- rf sees a
+        // channel index and nothing else. It is the head of the interrupt
+        // chain, and the chain is only readable end to end if every link says
+        // what it knows: cause here, source latch in rf.int_pending_set, level
+        // move in rf.int_level.
+        `fw_ev_state(dbg_if(), FW_L_TXN, "de.raise_int")
+            `fw_subject(c)
+            `fw_field_u8_as("ch", c)
+            `fw_field_u8_as("cause", int'(cause))     // 0 chunk, 1 done, 2 err
+            `fw_state_change(0, longint'(cause), FW_ACTOR_HW, 0)
+        `fw_ev_end
         rf.raise_int(c);                                 // moves the level (rf int seam)
         if (irqif != null)                               // publish the cause (optional sink)
             irqif.raise('{channel: c[4:0], cause: cause});

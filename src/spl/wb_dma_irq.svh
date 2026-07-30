@@ -54,13 +54,42 @@ class wb_dma_irq extends fw_component
         da.set(1'b0); db.set(1'b0);                    // seat the reset level
         forever begin
             automatic bit na, nb;
-            wait (m_dirty);                            // level-sensitive: no lost wake
+            `fw_op_span(lop)          // a declaration: must precede any statement
+            wait (m_dirty);                          // level-sensitive: no lost wake
             m_dirty = 1'b0;                            // clear BEFORE reading -> a change
             na = m_rf.inta();                          // signalled after this re-dirties
             nb = m_rf.intb();
             if (na !== a || nb !== b) begin
                 a = na; b = nb;
+                // Row 29 (`irq.level_drive`): set() blocks a clock (the level is
+                // registered onto inta_o/intb_o by the GPIO cores), so this is a
+                // span with a real duration and it is the model's only interrupt
+                // cost that is not free. Worth measuring rather than assuming:
+                // it is the difference between "the interrupt is late" and "the
+                // interrupt is late because we spent a clock per edge".
+                `fw_op_begin(dbg_if(), FW_L_TXN, "irq.level_drive", lop)
+                    `fw_field_b(a)
+                    `fw_field_b(b)
+                `fw_op_opened
                 da.set(a); db.set(b);
+                `fw_op_close(dbg_if(), lop)
+                `fw_op_end(lop)
+            end else begin
+                // Row 30 (`spurious_wake`): woken, re-evaluated, nothing moved.
+                //
+                // Real and measurable rather than cosmetic: every wake that
+                // reaches here costs a re-evaluation, and a wake that DOES
+                // move the level costs a clock in set(). A model that spends
+                // its time being woken for nothing is a performance finding,
+                // and one that is invisible unless the non-event is recorded.
+                //
+                // The single candidate is the aggregate level, with the reason
+                // it did not move.
+                `fw_ev_decision(dbg_if(), FW_L_OP, "irq.spurious_wake")
+                    `fw_field_b_as("inta", na)
+                    `fw_field_b_as("intb", nb)
+                    `fw_dec_cand(({nb, na}), 1)      // 1 = level_unchanged
+                `fw_ev_end
             end
         end
     endtask

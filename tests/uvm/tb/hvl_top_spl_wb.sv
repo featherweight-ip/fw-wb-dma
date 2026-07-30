@@ -62,6 +62,10 @@ module hvl_top_spl_wb;
         root.vhost = hdl_top_spl_wb.u_host.u_if;
         clk_dom = new("clock", root, hdl_top_spl_wb.u_clk);
         root.clock.connect(clk_dom);         // seat the root clock domain
+        // Observable events: wired unconditionally, active only under +fw_dbg.
+        // Attached to the DUT root ONLY -- the always-on reference runs the same
+        // engine, and two interleaved copies of every event is not a trace.
+        void'(fw_dbg_console::attach(root, "dut"));
         root.start();                        // build -> connect -> run
 
         // Always-on passive reference (skipped for perf: 2x engine work skews it).
@@ -116,4 +120,8 @@ module hvl_top_spl_wb;
         wc_end = wc_now();
         $display("[PERF] %m FINISH wallclock=%0.3f s  ELAPSED=%0.3f s", wc_end, wc_end - wc_start);
     end
+    // The site catalog + field schema, on +fw_dbg_catalog. At END of run:
+    // a site's schema is written on its first activation, not at elaboration.
+    final fw_dbg_console::dump_catalog();
+
 endmodule

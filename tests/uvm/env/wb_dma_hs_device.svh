@@ -7,8 +7,17 @@ class wb_dma_hs_device extends fw_component;
     int unsigned n_pending, n_ack;
     bit          nd_q, rest_q;
     fw_event_set m_mons[$];       // monitors this HS port produces requests into
+    // This device's identity in the catalog, so the engine's wake set reads
+    // {..., hs0.req} instead of {..., ?}. Registered through the catalog API
+    // directly rather than via `fw_dbg_site_inst: this compilation unit does not
+    // include the fw-hdl macro header, and one elaboration-time entry in a
+    // testbench class is not worth dragging it in for.
+    int unsigned m_sid;
 
-    function new(string name, fw_component parent); super.new(name, parent); endfunction
+    function new(string name, fw_component parent);
+        super.new(name, parent);
+        m_sid = fw_dbg_catalog::register_site({name, ".req"}, FW_DBG_SCHED, FW_L_OP);
+    endfunction
     function void build(); hs = new(this); endfunction
 
     // engine side: block for a chunk request, return latched qualifiers.
@@ -29,13 +38,17 @@ class wb_dma_hs_device extends fw_component;
     virtual function void hs_produce_to(fw_event_set s);
         m_mons.push_back(s);
     endfunction
+    // engine side (fw_awaitable_if): who this source is, for the observer.
+    virtual function int unsigned hs_dbg_site();
+        return m_sid;
+    endfunction
 
     // stimulus side: request one chunk and block until the engine acks it.
     task request_chunk(input bit nd = 0, input bit rest = 0);
         int unsigned prev = n_ack;
         nd_q = nd; rest_q = rest;
         n_pending++; ->ev_req;
-        foreach (m_mons[i]) m_mons[i].notify();   // produce: wake the engine's monitor
+        foreach (m_mons[i]) m_mons[i].notify(hs);  // produce: wake the engine's monitor
         while (n_ack == prev) @(ev_ack);
     endtask
 endclass

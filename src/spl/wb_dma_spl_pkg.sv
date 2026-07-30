@@ -22,6 +22,7 @@
 // fw-hdl; fw_proto_wb_pkg (wb_proto_if, the bus boundary) from fw-proto-wb; and
 // fw_proto_gpio_pkg (gpio_drive_if) from fw-proto-gpio.
 `include "fw_hdl_macros.svh"
+`include "dbg/fw_dbg_macros.svh"     // observable-events emit sites (compiled out by FW_TRACE_OFF)
 `include "wb_dma_spl_macros.svh"     // FW_MEM_IMP + FW_WB_PROTO_IMP providers
 
 package wb_dma_spl_pkg;

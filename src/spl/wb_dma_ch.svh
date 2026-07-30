@@ -63,7 +63,17 @@ class wb_dma_ch;
     // capability is absent the corresponding control bit is ignored (spec App. A).
     bit cap_en, cap_ars, cap_ed, cap_cbuf;
 
-    // The MMIO register bank (fw-hdl register model).
+    // A VIEW of this channel's MMIO register bank.
+    //
+    // Not owned. The bank belongs to the register MAP (`wb_dma_regs`), which
+    // creates it and places it at 0x20 + id*0x20; this is a handle to that
+    // region. The channel used to construct it and donate it upward, which made
+    // creation run opposite to containment and left "who owns this bank"
+    // genuinely ambiguous -- the channel by construction, the map by address.
+    //
+    // Ownership is singular, views are plural: the engine, the register file and
+    // the UVM reference model all reach these same registers, and none of them
+    // is more the owner than this object is.
     wb_dma_ch_regs regs;
 
     // Working state (engine-private, loaded from the registers on start / reload).
@@ -73,14 +83,15 @@ class wb_dma_ch;
     bit [31:0]   w_src, w_dst;
     int unsigned w_rem;     // words remaining in this TOT_SZ
 
-    function new(int unsigned id,
+    // `regs` is handed in, not built here -- see the member's comment.
+    function new(int unsigned id, wb_dma_ch_regs regs,
                  bit cap_en = 1, bit cap_ars = 1, bit cap_ed = 1, bit cap_cbuf = 1);
         this.id       = id;
+        this.regs     = regs;
         this.cap_en   = cap_en;
         this.cap_ars  = cap_ars;
         this.cap_ed   = cap_ed;
         this.cap_cbuf = cap_cbuf;
-        regs = new($sformatf("ch%0d", id));
         w_src = '0; w_dst = '0; w_rem = 0;
     endfunction
 

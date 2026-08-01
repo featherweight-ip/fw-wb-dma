@@ -1,0 +1,21 @@
+// Scenario-layer wrapper for the configure_interrupt_routing() operation.
+//
+// Every scenario that traverses an end-to-end operation must traverse this
+// first: completion IS the interrupt, so an unrouted channel has no observable
+// completion condition at all.
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_ops_c {
+
+    action configure_interrupt_routing_a {
+        rand wb_dma_int_bank_e  bank;
+        rand bit[31]            channel_mask;
+
+        constraint default bank         == WB_DMA_INT_A;
+        constraint default channel_mask == 0x7fffffff;   // route everything
+
+        exec body {
+            comp.configure_interrupt_routing(bank, channel_mask);
+        }
+    }
+}

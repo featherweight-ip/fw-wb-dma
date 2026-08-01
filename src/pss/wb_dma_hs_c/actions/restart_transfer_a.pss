@@ -1,0 +1,15 @@
+// Scenario-layer wrapper for the restart_transfer() operation.
+//
+// The spec requires no transfer in progress when dma_rest_i asserts, and this
+// model does not enforce that -- it is the strongest candidate for the first
+// precondition work, because it is the one case where violating it looks
+// destructive. Until then, a scenario must not traverse this in parallel with
+// a live transfer on the same channel.
+extend component wb_dma_hs_c {
+
+    action restart_transfer_a {
+        exec body {
+            comp.restart_transfer();
+        }
+    }
+}

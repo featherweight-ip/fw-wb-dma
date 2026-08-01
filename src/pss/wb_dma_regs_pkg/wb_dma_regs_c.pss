@@ -1,0 +1,108 @@
+// The engine-global register bank (docs/dma_doc.md §4.1-4.3), the address-map
+// constants that place the whole register file, and the plain-word register
+// type the channel bank reuses.
+//
+// The per-channel banks are NOT nested here. They are separate top-level
+// groups, one per wb_dma_ch_ops_c instance -- see wb_dma_ch_regs_c.pss for why.
+//
+// Map layout, cross-checked against src/spl/wb_dma_rf.svh:
+//
+//   0x00  CSR         global control (PAUSE)
+//   0x04  INT_MSK_A   per-channel routing mask, bank A
+//   0x08  INT_MSK_B   per-channel routing mask, bank B
+//   0x0c  INT_SRC_A   masked pending snapshot, bank A (RO)
+//   0x10  INT_SRC_B   masked pending snapshot, bank B (RO)
+//   0x20  channel 0 bank ... stride 0x20, eight registers per bank
+package wb_dma_regs_pkg {
+    import std_pkg::*;
+    import addr_reg_pkg::*;
+
+    // ---------------------------------------------------------------------
+    // Address map
+    // ---------------------------------------------------------------------
+    //
+    // MAX_CH is the BUILD-TIME channel count (RTL `ch_count`). It sizes the
+    // static register structure, so it is a compile-time constant here. The
+    // number of channels a given instance actually uses is the runtime
+    // wb_dma_ops_c.num_ch attribute, constrained to <= MAX_CH.
+
+    static const int      WB_DMA_MAX_CH     = 4;
+
+    static const bit[64]  WB_DMA_CH_BASE    = 0x20;   // channel 0 bank offset
+    static const bit[64]  WB_DMA_CH_STRIDE  = 0x20;   // bytes between banks
+
+    // Total span of the register file, for the non-allocatable MMIO region.
+    static const bit[64]  WB_DMA_REG_SPAN   =
+        WB_DMA_CH_BASE + WB_DMA_MAX_CH * WB_DMA_CH_STRIDE;
+
+    // Bytes per external descriptor: DESC_CSR, DESC_ADR0, DESC_ADR1, DESC_NEXT
+    // (§3.3 Figure 6), and the byte offset of DESC_NEXT within one.
+    static const bit[64]  WB_DMA_DESC_BYTES    = 16;
+    static const bit[64]  WB_DMA_DESC_NEXT_OFF = 12;
+
+    // ---------------------------------------------------------------------
+    // CSR -- global control (offset 0x00, §4.1)
+    // ---------------------------------------------------------------------
+    //
+    // Only PAUSE is implemented; the RTL reads the register back as
+    // {31'h0, paused}.
+    struct wb_dma_gcsr_s : packed_s<> {
+        rand bit      pause;        //  0    RW  pause all DMA transfers
+        rand bit[31]  reserved;     // 31:1  RO
+    }
+
+    pure component wb_dma_gcsr_r : reg_c<wb_dma_gcsr_s, READWRITE, 32> {}
+
+    // ---------------------------------------------------------------------
+    // INT_MSK_A/B and INT_SRC_A/B -- interrupt routing (§4.2, §4.3)
+    // ---------------------------------------------------------------------
+    //
+    // One value type, two register types, because the masks are RW and the
+    // sources are RO.
+    //
+    // INT_MSK: two banks, two independent aggregate outputs; a channel may be
+    // routed to both. Because every end-to-end operation completes on a
+    // channel interrupt, programming at least one of these is a hard
+    // prerequisite for all of them (operation model §3.1.1).
+    //
+    // INT_SRC: a masked snapshot of the pending per-channel sources -- the RTL
+    // computes int_srca = int_maska_r & ch_int (wb_dma_rf.v). Reading it has NO
+    // side effect, unlike a channel CSR read, which makes it the only
+    // side-effect-free completion condition the device offers. But because it
+    // is ANDed with the routing mask, a channel that is not routed never
+    // appears in it at all.
+    struct wb_dma_intvec_s : packed_s<> {
+        rand bit[31]  ch;           // 30:0  per-channel bits, bit N = channel N
+        rand bit      reserved;     // 31    RO
+    }
+
+    pure component wb_dma_intmsk_r : reg_c<wb_dma_intvec_s, READWRITE, 32> {}
+    pure component wb_dma_intsrc_r : reg_c<wb_dma_intvec_s, READONLY,  32> {}
+
+    // ---------------------------------------------------------------------
+    // The bank
+    // ---------------------------------------------------------------------
+
+    pure component wb_dma_regs_c : reg_group_c {
+        wb_dma_gcsr_r     csr;          // 0x00  global control (PAUSE)
+        wb_dma_intmsk_r   int_msk_a;    // 0x04  routing mask, bank A
+        wb_dma_intmsk_r   int_msk_b;    // 0x08  routing mask, bank B
+        wb_dma_intsrc_r   int_src_a;    // 0x0c  pending snapshot, bank A (RO)
+        wb_dma_intsrc_r   int_src_b;    // 0x10  pending snapshot, bank B (RO)
+
+        function bit[64] get_offset_of_instance(string name) {
+            match (name) {
+                ["csr"]:       return 0x00;
+                ["int_msk_a"]: return 0x04;
+                ["int_msk_b"]: return 0x08;
+                ["int_src_a"]: return 0x0c;
+                ["int_src_b"]: return 0x10;
+                default:       return -1;
+            }
+        }
+
+        function bit[64] get_offset_of_instance_array(string name, int index) {
+            return -1;
+        }
+    }
+}

@@ -1,0 +1,39 @@
+// request_chunk -- operation model §4, level: end-to-end.
+//
+// completes_when: dma_ack_o asserts for this channel -- CHK_SZ words have
+//                 moved (or TOT_SZ, if CHK_SZ == 0).
+// waits for:      the ack pin. NEVER a driver state: no processor is involved,
+//                 and this wait belongs to the requesting device's hardware.
+//
+// force_next_desc is a PARAMETER rather than a sibling operation because the
+// spec's second nd form is DEFINED as nd held across one request/ack pair --
+// it has no completion of its own. The pre-request form does, and is
+// skip_to_next_descriptor(). The general rule that fell out: if two variants
+// share a completion signal, they are one operation with a parameter.
+//
+// Note that nd is deasserted here unconditionally but asserted only on
+// request. That is what lets skip_to_next_descriptor() -- which asserts nd
+// early and leaves it up -- compose with a plain request_chunk(0): the
+// qualifier survives into the request and is cleared after the ack.
+//
+// open (§6.2): if dma_req_i stays asserted after ack, another chunk starts
+//              (§3.8). This operation deasserts before returning, so it never
+//              leaves work running that the caller did not ask for -- but the
+//              spec describes the waveform, not the intent, so this is a
+//              decision rather than a reading.
+import wb_dma_hs_pkg::*;
+
+extend component wb_dma_hs_c {
+
+    target function void request_chunk(bit force_next_desc) {
+        if (force_next_desc == 1) {
+            wb_dma_hs_drive_nd(chan, 1);
+        }
+
+        wb_dma_hs_drive_req(chan, 1);
+        wb_dma_hs_await_ack(chan);
+
+        wb_dma_hs_drive_req(chan, 0);
+        wb_dma_hs_drive_nd(chan, 0);
+    }
+}

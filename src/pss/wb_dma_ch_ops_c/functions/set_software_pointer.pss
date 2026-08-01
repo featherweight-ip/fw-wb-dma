@@ -1,0 +1,35 @@
+// set_software_pointer -- operation model §3.2, group 1, level: configuration.
+//
+// completes_when: CHn_SWPTR updated. A channel stalled on the old pointer may
+//                 resume as a side effect.
+// waits for:      nothing.
+//
+// The consumer side of a FIFO in memory (§3.5): the DMA stalls rather than
+// overrun the software reader, and publishing a new pointer un-stalls it. So
+// this is invoked repeatedly during a live transfer -- always concurrent with
+// a transfer_single().
+//
+// Note what this implies about scope: the FIFO's DATA is read on the test
+// writer's own memory path. This operation only publishes how far that reader
+// has got. Requires caps.cbuf, and only means anything with a circular-buffer
+// address mask programmed on the same channel.
+import wb_dma_regs_pkg::*;
+
+extend component wb_dma_ch_ops_c {
+
+    target function void set_software_pointer(bit[31] ptr, bit enable) {
+        wb_dma_swptr_s sw;
+
+        if (!caps.cbuf) {
+            return;
+        }
+
+        // A whole-register write, not a read-modify-write: both fields are
+        // supplied, and this register carries no status to preserve. That also
+        // keeps it clear of the CSR read-to-clear hazard, which matters because
+        // this runs against a live channel.
+        sw.ptr = ptr;
+        sw.en  = enable;
+        regs.swptr.write(sw);
+    }
+}

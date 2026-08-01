@@ -1,0 +1,37 @@
+// The requirement contract of the hardware-handshake operation model
+// (docs/wb_dma_operation_model.md §4, `imports:`).
+//
+// These are FOREIGN functions -- implemented by the environment, not in PSS.
+// They are the whole platform requirement of wb_dma_hs_c, and they are
+// deliberately NOT the PSS memory primitives: nothing on this interface is
+// addressable. That difference in platform requirement, not just in pins, is
+// the sharpest justification for keeping MMIO and handshake as two models
+// rather than one.
+//
+// `chan` indexes dma_req_i / dma_ack_o / dma_nd_i / dma_rest_i.
+//
+// Prototypes live in a package rather than on the component because a foreign
+// function carries no component instance context, so the channel has to be an
+// explicit argument.
+//
+// Exception to the one-element-per-file rule: these five declarations are a
+// single contract, and splitting them across five files would obscure that
+// they are implemented together or not at all.
+package wb_dma_hs_pkg {
+
+    // Level-drive the request and next-descriptor qualifier lines.
+    import target function void wb_dma_hs_drive_req(int chan, bit level);
+    import target function void wb_dma_hs_drive_nd (int chan, bit level);
+
+    // Pulse dma_rest_i for one cycle.
+    import target function void wb_dma_hs_pulse_rest(int chan);
+
+    // Block until dma_ack_o asserts for this channel. Asserted one cycle after
+    // the chunk completes.
+    import target function void wb_dma_hs_await_ack(int chan);
+
+    // Cycle-exact delay. The nd-lead requirement in §3.9 is measured in cycles,
+    // which is where simulation and silicon diverge -- a post-silicon consumer
+    // has no way to honour it and cannot use skip_to_next_descriptor().
+    import target function void wb_dma_hs_delay_cycles(int n);
+}

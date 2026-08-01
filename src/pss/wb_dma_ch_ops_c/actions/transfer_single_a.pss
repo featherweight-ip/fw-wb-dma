@@ -1,0 +1,38 @@
+// Scenario-layer wrapper for the transfer_single() operation.
+//
+// The operation model proper is the functions; the actions exist so a scenario
+// can compose operations -- and composition is where this device's concurrency
+// lives. Multi-channel activity is PARALLEL COMPOSITION of these, not one
+// operation sliced into arm-and-wait halves: `arb`, `hol` and any bandwidth or
+// priority scenario are N of these issued in parallel, and nothing in the
+// operation model changes with channel count.
+import std_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_ch_ops_c {
+
+    action transfer_single_a {
+        rand wb_dma_ch_cfg_s    cfg;
+
+        // Set when the scenario expects the transfer to be aborted or to hit a
+        // bus error, so an ERROR return is the intended outcome rather than a
+        // failure. Reaching an error at all requires a second model driving
+        // err_i, or a concurrent stop_channel_a (§5.1).
+        rand bool               expect_error;
+
+        constraint default expect_error == false;
+
+        // The channel must be one this instance actually has.
+        constraint cfg.prio < 8;
+
+        exec body {
+            wb_dma_status_e status;
+
+            status = comp.transfer_single(cfg);
+
+            if (status == WB_DMA_ERROR && expect_error == false) {
+                message(LOW, "wb_dma: transfer_single completed with ERROR");
+            }
+        }
+    }
+}

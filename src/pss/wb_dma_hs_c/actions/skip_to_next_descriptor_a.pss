@@ -1,0 +1,14 @@
+// Scenario-layer wrapper for the skip_to_next_descriptor() operation.
+//
+// Must be traversed immediately before a request_chunk_a on the same channel:
+// this delivers the qualifier and leaves nd asserted, and the following
+// request carries it in and clears it after the ack. Anything traversed
+// between the two breaks the pairing.
+extend component wb_dma_hs_c {
+
+    action skip_to_next_descriptor_a {
+        exec body {
+            comp.skip_to_next_descriptor();
+        }
+    }
+}

@@ -1,0 +1,48 @@
+// transfer_single -- operation model §3.2, group 1, level: end-to-end.
+// (`run_transfer` in the first pass; renamed for symmetry with transfer_list.)
+//
+// completes_when: the channel's DONE (or ERR) interrupt has been observed and
+//                 the CHn_CSR read has returned the status and cleared the
+//                 source.
+// waits for:      channel DONE or ERR, on the per-channel interrupt. This is
+//                 the core driver FSM: submit -> RUNNING -> completion.
+//
+// The whole transfer: program, arm, wait, report. This is the operation every
+// downstream consumer actually calls, and in SOFTWARE mode it needs nothing
+// but memory access plus a completion wait -- which is why the model retargets
+// to firmware and post-silicon nearly for free.
+//
+// TWO CALLERS' OBLIGATIONS THIS SIGNATURE DOES NOT ENCODE:
+//
+//   mode == HW_HANDSHAKE: this call cannot complete on its own. Something must
+//   be calling request_chunk() on the matching wb_dma_hs_c concurrently. A
+//   handshake transfer is inherently a parallel composition of one MMIO
+//   operation and N handshake operations (§2.2).
+//
+//   cfg.auto_restart: this call is DELIBERATELY NON-TERMINATING. CSR bit 11
+//   sets DONE only once ARS is clear, so the completion event exists but
+//   nothing in this operation causes it. Another thread must clear ARS
+//   (set_auto_restart(0)) or abort the channel (stop_channel()); the in-flight
+//   iteration then retires and DONE asserts. It is a blocking read on a stream
+//   that ends when someone closes it -- so an ARS transfer must never be the
+//   only operation a scenario waits on.
+import wb_dma_regs_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_ch_ops_c {
+
+    target function wb_dma_status_e transfer_single(wb_dma_ch_cfg_s cfg) {
+        wb_dma_ch_csr_s csr;
+
+        configure_channel(cfg);
+
+        // Arm. Read-modify-write so the configuration just written survives;
+        // the read also clears the ROC status bits, which is harmless here
+        // because the channel has not started yet.
+        csr = regs.csr.read();
+        csr.ch_en = 1;
+        regs.csr.write(csr);
+
+        return wait_completion();
+    }
+}

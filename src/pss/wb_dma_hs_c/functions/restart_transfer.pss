@@ -1,0 +1,31 @@
+// restart_transfer -- operation model §4, level: CONFIGURATION.
+//
+// completes_when: the channel's working registers have been reloaded with
+//                 their originally programmed -- or last-fetched-descriptor --
+//                 values.
+// waits for:      nothing observable. Pin-only, asserted by construction.
+//
+// Configuration rather than end-to-end because nothing leaves the device; only
+// internal state is restored. The canonical consumer is the Ethernet-MAC
+// collision case in §3.10: a partially transmitted frame has to be resent from
+// the beginning.
+//
+// Needs caps.ars on the channel and REST_EN set through the MMIO model, so
+// this is one of the few places the two operation models have an ordering
+// dependency on each other rather than merely running concurrently.
+//
+// open (§6): the spec requires "no transfer in progress" when dma_rest_i
+//            asserts. That is a precondition, and deliberately not formalized
+//            in this pass -- but it is the one case where violating it looks
+//            destructive, which makes it the strongest candidate for the first
+//            precondition work. Note the tension with blocking semantics: the
+//            caller must know a concurrent transfer_single() is quiescent, and
+//            no operation reports that.
+import wb_dma_hs_pkg::*;
+
+extend component wb_dma_hs_c {
+
+    target function void restart_transfer() {
+        wb_dma_hs_pulse_rest(chan);
+    }
+}

@@ -1,0 +1,28 @@
+// A transfer aborted mid-flight by a concurrent STOP.
+//
+// The two operations complete off ONE event: stop_channel returns, and so does
+// the transfer it aborted -- with status ERROR, because the device reports an
+// abort as an error rather than as a clean stop.
+//
+// This is also the model's one deliberate violation of the
+// one-operation-per-channel rule that makes the completion poll safe; see
+// wb_dma_ch_ops_c/functions/stop_channel.pss for what that costs.
+extend component pss_top {
+
+    action abort_a {
+        wb_dma_ops_c::configure_interrupt_routing_a  route;
+        wb_dma_ch_ops_c::transfer_single_a           xfer;
+        wb_dma_ch_ops_c::stop_channel_a              abort;
+
+        // The abort is the expected outcome, not a failure.
+        constraint xfer.expect_error == true;
+
+        activity {
+            route;
+            parallel {
+                xfer;
+                abort;
+            }
+        }
+    }
+}

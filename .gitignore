@@ -151,7 +151,6 @@ activemq-data/
 # Anchor the venv dir names to the repo root so they don't shadow HDL source
 # directories that happen to be named env/ (e.g. tests/uvm/env/).
 .env
-.envrc
 .venv
 /env/
 /venv/

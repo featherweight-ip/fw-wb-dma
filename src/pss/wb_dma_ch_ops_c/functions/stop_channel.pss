@@ -1,0 +1,44 @@
+// stop_channel -- operation model §3.2, group 1, level: end-to-end.
+//
+// completes_when: STOP written; the channel has aborted, ERR is set, and the
+//                 error interrupt (if enabled) has been raised.
+// waits for:      channel ERR, on the per-channel interrupt. An abort path
+//                 that completes the SAME outstanding request from a second
+//                 entry point.
+//
+// An abort is reported as an ERROR, not as a clean stop -- carried into the
+// contract verbatim. Note the consequence for the scenario layer: the aborted
+// transfer_single() also returns, with status WB_DMA_ERROR. Two blocking
+// operations complete off one event.
+//
+// THE ONE PLACE TWO OPERATIONS SHARE A CHANNEL. By definition this aborts a
+// transfer that is still running, so it violates the one-operation-per-channel
+// rule that makes the polling read in wait_completion() safe. Two consequences:
+//
+//   * The read-modify-write below reads CHn_CSR, which clears ERR and the
+//     interrupt sources. That read happens BEFORE STOP is written, so it can
+//     only consume status that was already there -- the abort's own ERR is set
+//     afterwards and is still seen by the waiting transfer. What it can lose is
+//     a completion that landed in the instant before the abort.
+//   * Both this call and the aborted transfer_single() then poll the same CSR,
+//     and whichever reads first consumes the ERR. Which of the two returns the
+//     status and which spins is not determined by this model.
+//
+// open (§6.5): is write-1-to-STOP acknowledged before or after the current
+//              WISHBONE cycle retires? That decides whether this operation can
+//              return before the bus is quiet, which matters post-silicon.
+import wb_dma_regs_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_ch_ops_c {
+
+    target function wb_dma_status_e stop_channel() {
+        wb_dma_ch_csr_s csr;
+
+        csr = regs.csr.read();
+        csr.stop = 1;
+        regs.csr.write(csr);
+
+        return wait_completion();
+    }
+}

@@ -1,0 +1,27 @@
+// The hardware-handshake operation model, one instance per handshake-capable
+// channel (docs/wb_dma_operation_model.md §4, `dma_hs_c`).
+//
+// The participant here is the PERIPHERAL DEVICE, not the processor: this is
+// the model a device-side consumer -- or a requesting IP's own operation model
+// -- composes with. All three operations were already blocking in the first
+// pass; a sideband has no state to poll, so its operations arrive at the right
+// shape naturally.
+//
+// No base address, and that absence is the point: this interface has no
+// address space at all, which is what distinguishes a sideband from a bus
+// interface.
+//
+// None of these three is ever a driver state. request_chunk() waits on a pin
+// with no processor involved; dma_nd_i and dma_rest_i have no register bit
+// anywhere in §4, so software cannot invoke them at all.
+
+import wb_dma_hs_pkg::*;
+
+component wb_dma_hs_c {
+
+    // Index into dma_req_i / dma_ack_o / dma_nd_i / dma_rest_i.
+    int     chan;
+
+    // §3.9 requires dma_nd_i to lead dma_req_i by at least two cycles.
+    int     nd_lead_cycles = 2;
+}

@@ -1,0 +1,56 @@
+// System assembly: the address space, the DMA's two operation models, and the
+// integration constants that place the device in the map.
+//
+// Everything here is environment, not device. The register offsets and the
+// channel stride are in wb_dma_regs_pkg; only the BASE address and the system
+// RAM live at this level, because only the system knows them.
+
+import addr_reg_pkg::*;
+import wb_dma_regs_pkg::*;
+
+component pss_top {
+
+    // Where the register file sits in the map. Non-allocatable: it is MMIO,
+    // not memory the solver may hand out for buffers.
+    static const bit[64]  WB_DMA_BASE_ADDR = 0x9d000000;
+
+    // System RAM the test writer's buffers and descriptor lists are claimed
+    // from. Must be reachable from WISHBONE interface 0, since descriptors are
+    // always fetched there (§3.3).
+    static const bit[64]  SYS_RAM_BASE     = 0x00000000;
+    static const bit[64]  SYS_RAM_SIZE     = 0x00100000;
+
+    transparent_addr_space_c<>  sys_mem;
+
+    // The MMIO operation model, and its per-channel operations underneath.
+    wb_dma_ops_c                dma;
+
+    // The handshake operation model: one per handshake-capable channel. The
+    // participant is the peripheral device, so in a real system these would be
+    // owned by the requesting IP's model rather than sitting alongside the DMA.
+    wb_dma_hs_c                 hs[wb_dma_regs_pkg::WB_DMA_MAX_CH];
+
+    // init_down, not init_up, and the ordering is load-bearing: a child's
+    // init_up runs BEFORE its parent's, so anything a child needs during its
+    // own initialization has to be set on the way DOWN.
+    exec init_down {
+        transparent_addr_region_s<>  mmio;
+        transparent_addr_region_s<>  ram;
+        addr_handle_t                h;
+
+        mmio.addr = WB_DMA_BASE_ADDR;
+        mmio.size = wb_dma_regs_pkg::WB_DMA_REG_SPAN;
+        h = sys_mem.add_nonallocatable_region(mmio);
+
+        // Binds the global bank and every channel bank in one call.
+        dma.\init (h);
+
+        ram.addr = SYS_RAM_BASE;
+        ram.size = SYS_RAM_SIZE;
+        sys_mem.add_region(ram);
+
+        foreach (hs[i]) {
+            hs[i].chan = i;
+        }
+    }
+}

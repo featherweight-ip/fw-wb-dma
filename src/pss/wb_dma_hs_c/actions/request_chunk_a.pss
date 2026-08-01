@@ -1,0 +1,19 @@
+// Scenario-layer wrapper for the request_chunk() operation.
+//
+// One chunk per traversal. A scenario feeding a whole HW_HANDSHAKE transfer
+// repeats this ceil(tot_sz/chk_sz) times, in parallel with the
+// transfer_single_a it is feeding -- neither can complete without the other.
+extend component wb_dma_hs_c {
+
+    action request_chunk_a {
+        // Fuse the next-descriptor qualifier into this request (§3.9 form 2).
+        // Only meaningful on a channel running external descriptors.
+        rand bit force_next_desc;
+
+        constraint default force_next_desc == 0;
+
+        exec body {
+            comp.request_chunk(force_next_desc);
+        }
+    }
+}

@@ -1,0 +1,179 @@
+// Shared data types for the WISHBONE DMA/Bridge operation model.
+//
+// Plain data with no behaviour: the enums that name the device's modes and the
+// structs that carry an operation's arguments. One file, because these are
+// looked up by TYPE NAME from wherever they are used and are never included
+// selectively -- there is no build that wants the descriptor struct but not the
+// channel config.
+package wb_dma_types_pkg {
+    import std_pkg::*;      // packed_s, for the descriptor's memory layout
+
+    // ---------------------------------------------------------------------
+    // Enumerations
+    // ---------------------------------------------------------------------
+
+    // Which WISHBONE master interface an endpoint of a transfer uses
+    // (CSR.SRC_SEL / CSR.DST_SEL; docs/dma_doc.md §4.4.1).
+    //
+    // Note that external descriptors are always fetched from interface 0,
+    // regardless of which interface the DATA moves on (§3.3).
+    enum wb_dma_if_e {
+        WB_DMA_IF0 = 0,
+        WB_DMA_IF1 = 1
+    }
+
+    // Channel transfer mode (CSR.MODE; docs/dma_doc.md §3.2).
+    //
+    // SOFTWARE      the engine moves the whole transfer on its own once armed,
+    //               so transfer_single() is executable from a processor alone.
+    // HW_HANDSHAKE  each chunk is pulled by dma_req_i. A transfer_single() in
+    //               this mode CANNOT complete without a concurrent wb_dma_hs_c
+    //               producer calling request_chunk() -- operation model §2.2.
+    enum wb_dma_mode_e {
+        WB_DMA_SOFTWARE     = 0,
+        WB_DMA_HW_HANDSHAKE = 1
+    }
+
+    // The outcome of an end-to-end operation.
+    //
+    // An abort via stop_channel() is reported as ERROR, not as a distinct clean
+    // stop -- the device sets ERR on a STOP write (§3.2.2). That is a real
+    // firmware-visible wart, carried into the model verbatim rather than
+    // smoothed over here.
+    enum wb_dma_status_e {
+        WB_DMA_DONE,
+        WB_DMA_ERROR
+    }
+
+    // Which aggregate interrupt output a channel is routed to (§4.2). The two
+    // banks are independent; a channel may be routed to both.
+    enum wb_dma_int_bank_e {
+        WB_DMA_INT_A,
+        WB_DMA_INT_B
+    }
+
+    // ---------------------------------------------------------------------
+    // Structures
+    // ---------------------------------------------------------------------
+
+    // Build-time per-channel capabilities (RTL chN_conf).
+    //
+    // This is construction-time configuration that changes WHICH OPERATIONS
+    // ARE LEGAL on a channel, which is why it is modelled at all: when a
+    // capability is absent, the corresponding control bit is SILENTLY IGNORED
+    // by hardware rather than raising an error (App. A). A test that programs
+    // ARS on a channel built without it gets no error and no auto-restart.
+    //
+    // Set on wb_dma_ch_ops_c.caps from an init exec; read by the operation
+    // functions to gate what they will attempt.
+    struct wb_dma_ch_caps_s {
+        bool present  = true;   // channel exists at all
+        bool ars      = true;   // auto restart supported
+        bool ed       = true;   // external (linked-list) descriptors supported
+        bool cbuf     = true;   // circular buffers / software pointer supported
+    }
+
+    // Everything configure_channel() programs into a channel's register bank
+    // (docs/wb_dma_operation_model.md §3.2, "chan_cfg_s").
+    //
+    // Fields that land directly on a CSR bit are declared as `bit` rather than
+    // `bool` so the operation code can assign them into the register-value
+    // struct without a conversion; the comment gives the sense of each.
+    //
+    // Deliberately NOT in here: anything the DMA drives itself, and anything
+    // that belongs to the test writer's own memory path. Filling the source
+    // region and checking the destination region are plain memory accesses,
+    // not part of the transfer's configuration.
+    struct wb_dma_ch_cfg_s {
+        rand bit[32]        src;            // CHn_A0
+        rand bit[32]        dst;            // CHn_A1
+
+        // Circular-buffer masks (§3.4). Only bits set to 1 are incremented, so
+        // the reset value 0xFFFFFFFC is "ordinary linear addressing". The low
+        // four bits are ignored by hardware => a circular buffer is at least
+        // 16 bytes deep. Requires caps.cbuf.
+        rand bit[32]        src_mask;       // CHn_AM0
+        rand bit[32]        dst_mask;       // CHn_AM1
+
+        rand bit[12]        tot_sz;         // total transfer, WORDS (max 4095)
+        rand bit[9]         chk_sz;         // chunk, WORDS; 0 => whole transfer
+
+        rand wb_dma_if_e    src_if;         // CSR.SRC_SEL
+        rand wb_dma_if_e    dst_if;         // CSR.DST_SEL
+        rand bit            inc_src;        // CSR.INC_SRC
+        rand bit            inc_dst;        // CSR.INC_DST
+
+        rand wb_dma_mode_e  mode;           // CSR.MODE
+        rand bit[3]         prio;           // CSR[15:13], 0 = lowest
+
+        rand bit            auto_restart;   // CSR.ARS;     needs caps.ars
+        rand bit            hw_restart_en;  // CSR.REST_EN; needs caps.ars
+        rand bit            sz_wb;          // CSR.SZ_WB;   descriptor writeback
+
+        // Interrupt enables. At least one of these must be set for an
+        // end-to-end operation to complete -- completion IS the interrupt.
+        rand bit            int_on_done;    // CSR.INE_DONE
+        rand bit            int_on_err;     // CSR.INE_ERR
+        rand bit            int_on_chunk;   // CSR.INE_CHK_DONE
+
+        // A transfer of zero words is not a transfer.
+        constraint tot_sz > 0;
+
+        // Defaults chosen so an unconstrained cfg is a plain linear software
+        // copy that reports completion.
+        constraint default src_mask      == 0xfffffffc;
+        constraint default dst_mask      == 0xfffffffc;
+        constraint default inc_src       == 1;
+        constraint default inc_dst       == 1;
+        constraint default mode          == WB_DMA_SOFTWARE;
+        constraint default auto_restart  == 0;
+        constraint default hw_restart_en == 0;
+        constraint default sz_wb         == 0;
+        constraint default int_on_done   == 1;
+        constraint default int_on_err    == 1;
+        constraint default int_on_chunk  == 0;
+    }
+
+    // One external (linked-list) descriptor (docs/dma_doc.md §3.3 Figure 6 /
+    // Table 1).
+    //
+    // This is the MEMORY LAYOUT, not a decoded view: a packed struct whose
+    // field order is the wire order, so write_descriptor() places fields
+    // rather than composing them. Same convention as the register value
+    // structs -- declaration order IS the bit numbering, LITTLE_ENDIAN.
+    //
+    // A descriptor carries a strict SUBSET of the channel CSR. Mode, priority,
+    // ARS, the address masks and CHK_SZ are NOT in it and stay whatever the
+    // channel registers hold -- which is why transfer_list() depends on a
+    // prior configure_channel().
+    //
+    // The interface selects are plain bits rather than wb_dma_if_e because a
+    // packed struct may only hold an enum that has a base type, and the front
+    // end does not parse enum base types. Same reason the register CSR structs
+    // use bits. 0 = IF0, 1 = IF1.
+
+    struct wb_dma_desc_csr_s : packed_s<> {
+        rand bit[12]  tot_sz;       // 11:0   total transfer size, WORDS
+        rand bit[4]   reserved0;    // 15:12
+        rand bit      dst_sel;      // 16     destination interface
+        rand bit      src_sel;      // 17     source interface
+        rand bit      inc_dst;      // 18
+        rand bit      inc_src;      // 19
+        rand bit      eol;          // 20     last descriptor in the list
+        rand bit[11]  reserved1;    // 31:21
+
+        // A transfer of zero words is not a transfer.
+        constraint tot_sz > 0;
+
+        constraint default inc_src == 1;
+        constraint default inc_dst == 1;
+        constraint default eol     == 0;
+    }
+
+    struct wb_dma_desc_s : packed_s<> {
+        rand wb_dma_desc_csr_s  csr;    // +0x0  DESC_CSR
+        rand bit[32]            adr0;   // +0x4  DESC_ADR0, source
+        rand bit[32]            adr1;   // +0x8  DESC_ADR1, destination
+        rand bit[32]            next;   // +0xc  DESC_NEXT, next pointer
+    }
+}

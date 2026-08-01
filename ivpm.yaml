@@ -9,6 +9,12 @@ package:
     - name: wb_dma
       url: https://github.com/freecores/wb_dma.git
       anonymous: true
+    - name: pssc
+      url: https://git.dvkit.org/psstools/pssc.git
+    - name: pssparser
+      url: https://git.dvkit.org/psstools/pssparser.git
+    - name: pss-skills
+      url: https://git.dvkit.org/psstools/pss-skills.git
     - name: fw-hdl
       url: https://github.com/featherweight-hdl/fw-hdl.git
     - name: zuspec-be-bc

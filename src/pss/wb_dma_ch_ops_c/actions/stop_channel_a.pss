@@ -1,0 +1,19 @@
+// Scenario-layer wrapper for the stop_channel() operation.
+//
+// By definition this runs CONCURRENTLY with the transfer_single_a it aborts --
+// it is not a sequential step after one. Traversing it on its own, against an
+// idle channel, is legal but meaningless.
+//
+// Both blocking operations complete off the one event: this returns, and so
+// does the aborted transfer, with status ERROR.
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_ch_ops_c {
+
+    action stop_channel_a {
+        exec body {
+            wb_dma_status_e status;
+            status = comp.stop_channel();
+        }
+    }
+}

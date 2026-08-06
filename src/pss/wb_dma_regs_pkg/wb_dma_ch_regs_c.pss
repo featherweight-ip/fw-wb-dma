@@ -4,11 +4,11 @@
 // A register bank is one artifact with one address decode, so it is one file:
 // the registers are never referenced apart from the group that maps them.
 //
-// This is a TOP-LEVEL register group: each wb_dma_ch_ops_c instance owns one
+// This is a TOP-LEVEL register group: each wb_dma_ch_c instance owns one
 // and binds it with set_handle() to its own non-allocatable region at
 // WB_DMA_CH_BASE + chan*WB_DMA_CH_STRIDE. Making the bank per-channel rather
 // than an array inside one device-wide group is what keeps every register
-// access in the operation code index-free -- see wb_dma_ch_ops_c.pss.
+// access in the operation code index-free -- see wb_dma_ch_c.pss.
 //
 // All value structs are packed LITTLE_ENDIAN, so the first-declared field
 // occupies bit 0 and each subsequent field stacks toward the MSB --

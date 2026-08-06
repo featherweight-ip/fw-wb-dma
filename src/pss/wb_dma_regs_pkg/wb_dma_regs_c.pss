@@ -3,7 +3,7 @@
 // type the channel bank reuses.
 //
 // The per-channel banks are NOT nested here. They are separate top-level
-// groups, one per wb_dma_ch_ops_c instance -- see wb_dma_ch_regs_c.pss for why.
+// groups, one per wb_dma_ch_c instance -- see wb_dma_ch_regs_c.pss for why.
 //
 // Map layout, cross-checked against src/spl/wb_dma_rf.svh:
 //
@@ -24,7 +24,7 @@ package wb_dma_regs_pkg {
     // MAX_CH is the BUILD-TIME channel count (RTL `ch_count`). It sizes the
     // static register structure, so it is a compile-time constant here. The
     // number of channels a given instance actually uses is the runtime
-    // wb_dma_ops_c.num_ch attribute, constrained to <= MAX_CH.
+    // wb_dma_c.num_ch attribute, constrained to <= MAX_CH.
 
     static const int      WB_DMA_MAX_CH     = 4;
 

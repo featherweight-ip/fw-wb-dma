@@ -1,0 +1,124 @@
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+fragment:
+  name: pss
+  # The DEVICE operation model, and the programming APIs generated from it.
+  #
+  # `docs/wb_dma_operation_model.md` is the specification; `src/pss/*` is its
+  # executable form; everything below is a projection of that one source. The
+  # device's register offsets, address arithmetic and operation bodies are
+  # stated once, here, and reach the testbench as generated code -- see
+  # `docs/op-model-export-design.md`.
+  tasks:
+
+  # ---- The source, in dependency order -----------------------------------------
+  # `pss.FileSet`, not `std.FileSet`. Same parameters; the difference is the
+  # ORDER. A glob yields alphabetical order, and alphabetical order of this tree
+  # leaves 78 references unresolved while the front end still reports
+  # `0 errors` and exits 0 (pssparser D3, `docs/pssparser-defects-2026-08-02.md`).
+  #
+  # Nothing here lists a file. The order comes from the layout -- `*_pkg` files
+  # and directories are packages, `*_c.pss` plus `*_c/` is a component and its
+  # attachments -- so adding a file to `wb_dma_ch_c/functions/` is the whole
+  # change. `strict: true` because this tree follows the convention exactly:
+  # anything that would make the order guessable-but-not-derived should fail
+  # here rather than be described in a log nobody reads.
+  #
+  # This task is the only statement of the selection. Anything outside the
+  # build that needs the same files -- a command line, pssparser's corpus gate
+  # -- reads it with `pss-order --from-flow src/pss --task src` rather than
+  # restating the root, the profile and the `exclude:` below. There used to be
+  # a generated `src/pss/files.f` for that; it went stale when the model was
+  # renamed, and a derivation cannot.
+  #
+  # `profile: total-topological` checks this tree against the STRICTEST
+  # front-end behaviour measured so far: a tool that rejects the whole model
+  # the moment a file names something not yet declared -- root scope included,
+  # at two files -- and returns exit status 0 while doing it. It does not
+  # change the order (there is one order). It adds the checks that class of
+  # tool makes load-bearing: `strict` is implied, and PSS that tool cannot
+  # compile at all is reported with a file and line here. Keeping this model
+  # inside that envelope is what makes it portable rather than merely working.
+  # `exclude:` selects the BUILD PROFILE. `wb_dma_cfg_pkg/` holds two
+  # mutually-exclusive files declaring the same package -- one setting
+  # WB_DMA_HAS_BLOCKING true, one false -- and exactly one may be selected;
+  # including both is a duplicate static const. A package is a set of files
+  # (§18.1.1a), so this is a legal use of the layout rather than a trick, and
+  # it needs no new parameter on `pss.FileSet`.
+  #
+  # The flag is the only knob in the device tree, and it answers one question:
+  # can the target runtime suspend a thread? See
+  # `src/pss/wb_dma_cfg_pkg/wb_dma_cfg_blocking.pss` for exactly what it
+  # selects.
+  - name: src
+    uses: pss.FileSet
+    with:
+      root: wb_dma_c
+      profile: total-topological
+      exclude: ["wb_dma_cfg_pkg/wb_dma_cfg_nonblocking.pss"]
+
+  # ---- The same device, without blocking primitives -----------------------------
+  # The firmware-facing profile: configuration operations, the three *_start()
+  # functions and check_completion(), and nothing else. No wait_completion, no
+  # end-to-end operations, no actions, no notify_irq.
+  #
+  # This exists to be CHECKED, not to be projected -- there is no C backend to
+  # feed yet (see the note at the bottom of this file). What it buys today is
+  # that the compile-if gating cannot rot: a reference from the core into the
+  # blocking layer fails here and nowhere else.
+  #
+  # It does NOT exist to give the non-blocking core its own regression. It does
+  # not need one: every blocking operation is a *_start() plus a wait over the
+  # same probe_status(), so the SystemVerilog simulations already drive the core
+  # on every run.
+  - name: src-nonblocking
+    uses: pss.FileSet
+    with:
+      root: wb_dma_c
+      profile: total-topological
+      exclude: ["wb_dma_cfg_pkg/wb_dma_cfg_blocking.pss"]
+
+  - name: check-nonblocking
+    uses: pssc.Check
+    needs: [src-nonblocking]
+    with:
+      order_check: false
+
+  # ---- Does it still link? ------------------------------------------------------
+  # Elaborate-only, no codegen: the cheap gate that catches a broken model
+  # before any of the projections below run.
+  #
+  # `order_check` stays OFF until pssparser D3 is fixed: the real model is
+  # order-dependent today (pinned by pssc's
+  # `tests/progseq/test_op_model_order.py`), so turning it on would fail every
+  # build for a defect the `src` task above already works around. Turn it on
+  # the day that xfail xpasses.
+  - name: check
+    uses: pssc.Check
+    needs: [src]
+    with:
+      order_check: false
+
+  # ---- The SystemVerilog programming API ----------------------------------------
+  # `wb_dma_c_pkg.sv` (the export API + factory) plus the bundled
+  # `pssc_reg_pkg.sv` it builds on. `classify_outputs` tags both as
+  # systemVerilogSource with their directory as an incdir, so a downstream
+  # SimLib/SimImage picks them up with no extra wiring. Compile order is
+  # pssc_reg_pkg.sv -> wb_dma_c_pkg.sv -> wb_dma_env_pkg.sv, which is the order
+  # the fileset carries.
+  - root: op-model-sv
+    uses: pssc.SvProgSeq
+    needs: [check]
+    with:
+      root: wb_dma_c
+      package_name: wb_dma_c_pkg
+      core_copy: true
+
+  # ---- The C and C++ programming APIs are NOT wired up yet ----------------------
+  # `pssc.CProgSeq` / `pssc.CppProgSeq` exist and are exercised by pssc's own
+  # regression, but against a flat example -- they have no equivalent of the SV
+  # backend's `lower_api_types`, so the first enum-typed operation argument in
+  # this model raises `unsupported C type for DataTypeEnum`. Wiring the tasks up
+  # before that lands would only add two tasks that always fail.
+  #
+  # Deliberately not stubbed out with a "skip" either: a task that pretends to
+  # generate a C API is worse than an absent one.

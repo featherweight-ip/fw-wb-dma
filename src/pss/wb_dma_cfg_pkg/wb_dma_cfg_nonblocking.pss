@@ -1,0 +1,22 @@
+// Build profile: TARGET HAS NO BLOCKING PRIMITIVES.
+//
+// The alternative to wb_dma_cfg_blocking.pss; see that file for what the flag
+// selects and why it is phrased as "can the runtime suspend a thread" rather
+// than "does the runtime have sync_pkg". Exactly one of the two is selected
+// into a build.
+//
+// The intended target is low-level firmware: no scheduler, no interrupt
+// dispatcher wired into PSS, no way to block a caller. Such a target gets the
+// non-blocking core and NOTHING ELSE -- there is deliberately no end-to-end
+// operation on this profile. `transfer_single_start()` arms the channel and
+// returns; `check_completion()` reports PENDING / DONE / ERROR; the loop
+// between them belongs to the firmware, which is the one place that knows what
+// to do while waiting.
+//
+// Presenting the scenario layer (tests/pss) to this profile is a hard error,
+// not a silent loss of actions -- see the compile assert in tests/pss/pss_top.pss.
+package wb_dma_cfg_pkg {
+
+    static const bool WB_DMA_HAS_BLOCKING = false;
+
+}

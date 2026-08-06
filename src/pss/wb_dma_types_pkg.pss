@@ -34,15 +34,27 @@ package wb_dma_types_pkg {
         WB_DMA_HW_HANDSHAKE = 1
     }
 
-    // The outcome of an end-to-end operation.
+    // The outcome of an end-to-end operation, and the result of a poll.
     //
     // An abort via stop_channel() is reported as ERROR, not as a distinct clean
     // stop -- the device sets ERR on a STOP write (§3.2.2). That is a real
     // firmware-visible wart, carried into the model verbatim rather than
     // smoothed over here.
+    //
+    // PENDING is the non-blocking core's third answer: check_completion() has
+    // read CHn_CSR and neither DONE nor ERR was set. It is appended rather than
+    // given its own enum so that check_completion() and wait_completion() share
+    // a return type and no conversion sits between the two layers. Appending
+    // also leaves DONE == 0 and ERROR == 1 where they were, which matters
+    // because these values cross into generated SV.
+    //
+    // THE BLOCKING OPERATIONS NEVER RETURN PENDING. They return only when the
+    // channel has reached a terminal state, so a caller of transfer_single()
+    // still has exactly two outcomes to handle.
     enum wb_dma_status_e {
         WB_DMA_DONE,
-        WB_DMA_ERROR
+        WB_DMA_ERROR,
+        WB_DMA_PENDING
     }
 
     // Which aggregate interrupt output a channel is routed to (§4.2). The two
@@ -64,7 +76,7 @@ package wb_dma_types_pkg {
     // by hardware rather than raising an error (App. A). A test that programs
     // ARS on a channel built without it gets no error and no auto-restart.
     //
-    // Set on wb_dma_ch_ops_c.caps from an init exec; read by the operation
+    // Set on wb_dma_ch_c.caps from an init exec; read by the operation
     // functions to gate what they will attempt.
     struct wb_dma_ch_caps_s {
         bool present  = true;   // channel exists at all

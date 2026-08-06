@@ -149,6 +149,7 @@ package:
   - { name: flags-run-dbg,  uses: hdlsim.SimRunArgsDbg,  with: { sim: "${{ sim }}" } }
 
   fragments:
+  - src/pss/flow.yaml
   - src/spl/flow.yaml
   - src/spl-rtl/flow.yaml
   - src/rtl/flow.yaml

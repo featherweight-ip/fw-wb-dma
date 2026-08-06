@@ -1,0 +1,35 @@
+// Build profile: TARGET HAS BLOCKING PRIMITIVES.
+//
+// One of two mutually-exclusive files declaring wb_dma_cfg_pkg. Exactly one is
+// selected into the build; `src/pss/flow.yaml` does the selecting with
+// `pss.FileSet`'s `exclude:`, and including both is an error (duplicate
+// static const).
+//
+// This is the ONLY knob in the device tree, and it answers one question: can
+// the target runtime SUSPEND A THREAD? That is narrower than "does the target
+// have sync_pkg". Both profiles need channel_c, because the in-progress guard
+// on wb_dma_ch_c uses try_put()/try_get(), which never block; only the `wake`
+// channel's get() does. A C runtime with no scheduler can implement the
+// non-blocking subset as a saturating counter and satisfy this profile's
+// negation.
+//
+// What the flag selects, in full:
+//
+//   true   wb_dma_ch_c.wake, wait_completion(), the three blocking end-to-end
+//          operations (transfer_single, transfer_list, stop_channel), their
+//          scenario actions, and wb_dma_c::notify_irq().
+//   false  none of the above exists. The tree is the non-blocking core only:
+//          configuration operations, the three *_start() functions and
+//          check_completion(). There is no end-to-end operation, by design --
+//          firmware writes its own poll loop, in its own environment, where a
+//          spin is free.
+//
+// Everything the non-blocking profile contains is also executed by this one:
+// the blocking wrappers are start() + wait, and wait is a loop over the same
+// CSR decode check_completion() uses. So a SystemVerilog regression exercises
+// the firmware path on every run without building a second image.
+package wb_dma_cfg_pkg {
+
+    static const bool WB_DMA_HAS_BLOCKING = true;
+
+}

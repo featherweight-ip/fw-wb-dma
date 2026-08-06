@@ -1,0 +1,55 @@
+// stop_channel_start -- operation model §3.2, group 1. The non-blocking half
+// of stop_channel(). Present on every profile.
+//
+// completes_when: STOP has been written. The abort itself has not necessarily
+//                 happened yet.
+// waits for:      nothing.
+//
+// An abort is reported as an ERROR, not as a clean stop -- the device sets ERR
+// on a STOP write (§3.2.2). Carried into the contract verbatim.
+//
+// THIS FUNCTION CLAIMS NOTHING, and that is deliberate.
+//
+// By definition it aborts a transfer that is still running, so the channel it
+// targets is already holding the `inflight` token. Claiming would report the
+// one case the model explicitly permits as a violation. So stop is the
+// documented exemption from the one-operation-per-channel rule, and now the
+// exemption is visible in the code rather than only in a comment.
+//
+// TWO CONSEQUENCES A FIRMWARE CALLER MUST KNOW, both inherited unchanged:
+//
+//   * The read-modify-write below reads CHn_CSR, which clears ERR and the
+//     interrupt sources. THIS IS STILL TRUE OF write_field: the LRM defines
+//     the field-wise write as a read-modify-write (§21.14.1), so the read is
+//     there even though the call no longer spells it out. That read happens
+//     BEFORE STOP is written, so it can
+//     only consume status that was already there -- the abort's own ERR is set
+//     afterwards and is still seen by the aborted transfer's poll. What it can
+//     lose is a completion that landed in the instant before the abort.
+//
+//   * WHO REPORTS THE ABORT IS NOT DETERMINED BY THIS MODEL. The aborted
+//     transfer polls the same CSR, and whichever read lands first consumes the
+//     ERR. On the non-blocking profile the loser's check_completion() answers
+//     PENDING forever -- the same undetermined race the blocking layer has
+//     always had, but a firmware caller sees it as a hang rather than as an
+//     action that does not retire.
+//
+// There is no check_completion() pairing for stop on the non-blocking profile:
+// stop holds no token, so it has nothing to poll with. A firmware caller
+// aborts, and then keeps polling the TRANSFER it aborted -- which is the
+// operation that owns the completion.
+//
+// open (§6.5): is write-1-to-STOP acknowledged before or after the current
+//              WISHBONE cycle retires? That decides whether an abort can be
+//              considered delivered on return, which matters post-silicon.
+import wb_dma_regs_pkg::*;
+
+extend component wb_dma_ch_c {
+
+    target function void stop_channel_start() {
+        // write_field IS the read-modify-write described above: §21.14.1
+        // defines it as one. The CHn_CSR read, and everything the header says
+        // about what that read consumes, is unchanged.
+        regs.csr.write_field("stop", 1);
+    }
+}

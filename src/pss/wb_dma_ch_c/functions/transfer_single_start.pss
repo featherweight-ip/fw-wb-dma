@@ -1,0 +1,56 @@
+// transfer_single_start -- operation model §3.2, group 1. The non-blocking
+// half of transfer_single(). Present on every profile.
+//
+// completes_when: the channel is programmed and armed. NOT when the transfer
+//                 has moved anything.
+// waits for:      nothing. Straight-line stores; returns with the transfer
+//                 running.
+//
+// Program, arm, return. The caller then polls check_completion() until it
+// answers something other than PENDING -- or, on a target with blocking
+// primitives, calls transfer_single(), which is exactly this plus the wait.
+//
+// The device knowledge is all here; the blocking layer adds only the loop.
+// That is why a SystemVerilog regression that never calls this directly still
+// tests it: transfer_single() is this function.
+//
+// THE CALLERS' OBLIGATIONS ARE UNCHANGED, and one of them gets sharper:
+//
+//   mode == HW_HANDSHAKE: the transfer cannot complete on its own. Something
+//   must be calling request_chunk() on the matching wb_dma_hs_c concurrently
+//   (§2.2). Splitting arm from wait does not help here -- the missing thing is
+//   a second initiator, not a second thread.
+//
+//   cfg.auto_restart: the transfer has no completion event. CSR bit 11 sets
+//   DONE only once ARS is clear, so nothing this function starts will ever make
+//   check_completion() answer DONE. Someone must clear ARS (set_auto_restart(0))
+//   or abort the channel (stop_channel_start()). In the blocking layer that is
+//   a thread that never returns; HERE IT IS A LOOP THAT NEVER EXITS, which is a
+//   firmware hang rather than a stalled PSS action. Same defect, less visible.
+//
+// Claims `inflight` FIRST, before touching a register. A start that would be
+// the second on a live channel is reported without having corrupted the
+// configuration of the first -- see wb_dma_ch_c.pss for what the guard is and
+// is not.
+import std_pkg::*;
+import wb_dma_regs_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_ch_c {
+
+    target function void transfer_single_start(wb_dma_ch_cfg_s cfg) {
+        if (!inflight.try_put(1)) {
+            message(NONE, "wb_dma: transfer_single_start() on a channel that already has an operation in progress");
+            return;
+        }
+
+        configure_channel(cfg);
+
+        // Arm. STILL A READ-MODIFY-WRITE: write_field is defined as one
+        // (§21.14.1), so the configuration just written survives, and the
+        // read still clears the ROC status bits -- harmless here because the
+        // channel has not started yet. Nothing about the bus traffic changed;
+        // only the spelling did.
+        regs.csr.write_field("ch_en", 1);
+    }
+}

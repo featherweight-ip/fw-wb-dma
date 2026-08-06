@@ -1,0 +1,78 @@
+// check_completion -- the non-blocking half of every end-to-end operation on
+// this channel. Present on every profile; it is what firmware polls.
+//
+// completes_when: immediately. One register read, one answer.
+// waits for:      nothing. Never suspends, never spins.
+//
+// Returns PENDING, DONE or ERROR. The caller supplies the loop -- and on a
+// target without blocking primitives that loop is the whole point: a bare-metal
+// driver spins here, or returns to its scheduler and comes back, or hangs it
+// off its own timer. None of those belong in this model, which is why the
+// non-blocking profile has no end-to-end operation at all.
+//
+// THE CONTRACT, WHICH IS NARROWER THAN IT LOOKS
+//
+//   1. An operation must have been STARTED on this channel -- one of
+//      transfer_single_start() or transfer_list_start().
+//   2. Once this returns anything other than PENDING, the operation is over.
+//      DO NOT CALL AGAIN until the next *_start().
+//
+// Both rules exist because reading CHn_CSR is destructive. ERR and the three
+// interrupt-source bits are read-to-clear (wb_dma_ch_regs_c.pss, Table 6
+// "12 ROC"), so this call CONSUMES the completion it reports. A second call
+// after DONE does not re-report DONE; it reads a channel whose status has
+// already been taken and answers PENDING, forever. That is the failure this
+// guards against, and it is invisible from the device side -- a stale read and
+// a live one look identical.
+//
+// HOW THE GUARD WORKS. `inflight` (see wb_dma_ch_c.pss) holds one token for the
+// life of an operation. This takes it, reads, and puts it back only if the
+// answer was PENDING:
+//
+//     try_get   fails  -> rule 1 or rule 2 has been broken. Report it.
+//     PENDING          -> restore the token; the operation continues.
+//     DONE / ERROR     -> leave it taken; the operation is over.
+//
+// Take-and-restore rather than a peek because channel_c has no peek (§21.9.1
+// offers get/put/try_get/try_put and nothing else). It is safe under the
+// one-operation-per-channel rule that already governs this model: the thread
+// doing the polling is the only one entitled to that token.
+//
+// WHAT "REPORT IT" MEANS, AND WHY IT IS WEAKER THAN IT SHOULD BE. This stdlib
+// has no runtime error() -- std_pkg offers print() and message() only -- so a
+// violation is a message at NONE verbosity, which is the loudest thing
+// available and is still only a message. A runtime that wants this fatal
+// should bind the model's message sink to one (a UVM_FATAL, an abort()); the
+// text is deliberately distinctive so it can be matched. The alternative
+// considered and rejected was returning ERROR, which would have made a
+// PROGRAMMING error indistinguishable from a DEVICE error.
+//
+// It returns PENDING after reporting, because there is no answer it can
+// honestly give: the state it would need was consumed by whoever broke the
+// rule.
+import std_pkg::*;
+import wb_dma_types_pkg::*;
+
+extend component wb_dma_ch_c {
+
+    target function wb_dma_status_e check_completion() {
+        wb_dma_status_e status;
+        bit             tok;
+        bool            ok;
+
+        if (!inflight.try_get(tok)) {
+            message(NONE, "wb_dma: check_completion() with no operation in progress on this channel -- either no *_start() was called, or a previous completion was already consumed");
+            return WB_DMA_PENDING;
+        }
+
+        status = probe_status();
+
+        if (status == WB_DMA_PENDING) {
+            // Still running: hand the token back. try_put cannot fail here --
+            // this is the only holder, and it was just emptied.
+            ok = inflight.try_put(tok);
+        }
+
+        return status;
+    }
+}

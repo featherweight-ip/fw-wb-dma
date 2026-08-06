@@ -46,6 +46,12 @@ fragment:
       - uses: dv.uvm.env-base
         needs:
         - spl
+        # The generated operation-model API (pssc_reg_pkg.sv +
+        # wb_dma_c_pkg.sv), ahead of the env packages that will import it.
+        # Compiling it here is also the gate that keeps codegen honest: a
+        # package that lints alone but does not compile against UVM would
+        # otherwise be found only when Phase 6 tries to use it.
+        - pss.op-model-sv
         - org.fwvip.wb.vip-uvm-hvlsrc
         - org.fwvip.gpio.vip-uvm-hvlsrc
         - uvm-rtl-ram-src

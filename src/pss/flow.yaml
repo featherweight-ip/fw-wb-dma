@@ -38,28 +38,35 @@ fragment:
   # tool makes load-bearing: `strict` is implied, and PSS that tool cannot
   # compile at all is reported with a file and line here. Keeping this model
   # inside that envelope is what makes it portable rather than merely working.
-  # `exclude:` selects the BUILD PROFILE. `wb_dma_cfg_pkg/` holds two
-  # mutually-exclusive files declaring the same package -- one setting
-  # WB_DMA_HAS_BLOCKING true, one false -- and exactly one may be selected;
-  # including both is a duplicate static const. A package is a set of files
-  # (§18.1.1a), so this is a legal use of the layout rather than a trick, and
-  # it needs no new parameter on `pss.FileSet`.
+  # ONE fileset, both profiles. There is no `exclude:` and no second copy of
+  # anything: the device tree states the model once, and the target says what
+  # kind of machine it is.
   #
-  # The flag is the only knob in the device tree, and it answers one question:
-  # can the target runtime suspend a thread? See
-  # `src/pss/wb_dma_cfg_pkg/wb_dma_cfg_blocking.pss` for exactly what it
-  # selects.
+  # `wb_dma_cfg_pkg.pss` derives `HAS_BLOCKING` from `target_cfg_pkg`, which
+  # pssc injects ahead of these sources -- `op-model-sv` publishes
+  # HAVE_BLOCKING=true, and a task that wants the other answer says so with
+  # `target_cfg:` rather than by selecting different files. See
+  # `docs/target-cfg-contract.md`.
+  #
+  # `target_cfg_pkg/target_cfg_decl.pss` is the empty declaration that makes the
+  # name resolvable when NOTHING injects (a bare `pssparser` run, or another
+  # tool); the adapter then defaults to the richer model.
   - name: src
     uses: pss.FileSet
     with:
       root: wb_dma_c
       profile: total-topological
-      exclude: ["wb_dma_cfg_pkg/wb_dma_cfg_nonblocking.pss"]
 
   # ---- The same device, without blocking primitives -----------------------------
   # The firmware-facing profile: configuration operations, the three *_start()
   # functions and check_completion(), and nothing else. No wait_completion, no
   # end-to-end operations, no actions, no notify_irq.
+  #
+  # SAME SOURCES AS `check`. The only difference is the one line below: this
+  # task tells the model it is being compiled for a runtime that cannot suspend
+  # a thread. That is the whole point of the target_cfg contract -- the profile
+  # is a property of the target, so it is stated as one, not as a different set
+  # of files. `pssc.Check` names no target, so it takes the constants directly.
   #
   # This exists to be CHECKED, not to be projected -- there is no C backend to
   # feed yet (see the note at the bottom of this file). What it buys today is
@@ -70,18 +77,16 @@ fragment:
   # not need one: every blocking operation is a *_start() plus a wait over the
   # same probe_status(), so the SystemVerilog simulations already drive the core
   # on every run.
-  - name: src-nonblocking
-    uses: pss.FileSet
-    with:
-      root: wb_dma_c
-      profile: total-topological
-      exclude: ["wb_dma_cfg_pkg/wb_dma_cfg_blocking.pss"]
-
   - name: check-nonblocking
     uses: pssc.Check
-    needs: [src-nonblocking]
+    needs: [src]
     with:
       order_check: false
+      # Both constants, not just the one this check is about: a provider that
+      # declares TARGET_CFG_VERSION declares every constant in that version,
+      # and pssc enforces it. That obligation is what lets the model reference
+      # a flag directly instead of guarding each one.
+      target_cfg: ["HAVE_BLOCKING=false", "HAVE_RUNTIME_SOLVER=false"]
 
   # ---- Does it still link? ------------------------------------------------------
   # Elaborate-only, no codegen: the cheap gate that catches a broken model
@@ -106,7 +111,7 @@ fragment:
   # pssc_reg_pkg.sv -> wb_dma_c_pkg.sv -> wb_dma_env_pkg.sv, which is the order
   # the fileset carries.
   - root: op-model-sv
-    uses: pssc.SvProgSeq
+    uses: pssc.OpModelSv
     needs: [check]
     with:
       root: wb_dma_c

@@ -27,6 +27,31 @@ Everything environment-specific lives in `tests/pss/` instead:
 pssparser $(pss-order --from-flow src/pss --task src --relative-to .)
 ```
 
+## Configuration: `target_cfg_pkg` and `wb_dma_cfg_pkg`
+
+The one knob in this tree answers a question about the EXECUTION TARGET -- can
+the runtime suspend a thread? -- so it is not device knowledge either. The
+convention that carries the answer is `docs/target-cfg-contract.md`; in short:
+
+| File | What it is |
+|---|---|
+| `target_cfg_pkg/target_cfg_decl.pss` | the empty declaration, so `compile has` has a package to name when nothing injects one. |
+| `wb_dma_cfg_pkg.pss` | the adapter. Derives `HAS_BLOCKING` from the target's answer, defaulting **true** when unconfigured. Every use site reads this and nothing else. |
+
+The answer itself is not a file here. pssc injects `target_cfg_pkg` ahead of
+these sources: `op-model-sv` publishes `HAVE_BLOCKING=true`, and the
+`check-nonblocking` task asks for the other answer with `target_cfg:` in
+`flow.yaml`. There is **one fileset** and no `exclude:` — a profile is a
+property of the target, so it is stated as one rather than as a different set
+of files. Both profiles are checked on every `dfm run` (127 types vs 124).
+
+Two properties are worth not breaking. The guard is **nested**, not a single
+`compile has(V) && ...` expression -- that shape is the LRM's own Example275 and
+pssparser rejects it, because short-circuiting governs evaluation and not name
+resolution. And the default is the **richer** model, because an unconfigured
+build that defaulted the other way would silently delete the blocking layer,
+elaborate clean, and test nothing.
+
 ## Where the operations live
 
 | Operation (model §) | Level | File |
@@ -92,6 +117,11 @@ Three things about the choice of form:
   The compiler now rejects a zero mask on a named field rather than emitting
   that, but `write_field` names no mask and cannot be bitten at all. Revisit
   when D5 is fixed.
+- **The generated SystemVerilog names the field back.** `write_field("ch_en", 1)`
+  emits `m_regs.csr.write_field(WB_DMA_CH_CSR_ch_en, 1)` against a `localparam`
+  the backend derives from the register layout — the field name is resolved at
+  compile time and never reaches the backend as a string. See §7b of
+  `docs/reg-masked-access-status.md`.
 - **Never `write_fields` in this model.** The plural form coalesces its fields
   into *one* bus read-modify-write — that is what it is for — and the only place
   two fields are set together (`transfer_list_start`) requires them to be two
@@ -181,15 +211,14 @@ For a command line, derive the order rather than keeping a filelist:
 ```sh
 pss-order --from-flow src/pss --task src --relative-to .   # device only
 pss-order . --include 'src/pss/**/*.pss' --include 'tests/pss/**/*.pss' \
-            --exclude 'src/pss/wb_dma_cfg_pkg/wb_dma_cfg_nonblocking.pss' \
             --root pss_top --profile total-topological     # + environment
 ```
 
 `pss-order` ships with `dv-flow-libpss` and calls the same `derive_file_set`
 the `pss.FileSet` task calls, so a command line cannot disagree with the build.
 `--from-flow` goes further and reads the task's own parameters -- the root, the
-profile, and the `exclude:` that picks one of the two config files -- so even
-those are stated once.
+profile, and the `exclude:` that drops the target profile -- so even those are
+stated once.
 
 There were two checked-in filelists here, `src/pss/files.f` and
 `tests/pss/files.f`. They are gone. A filelist is a snapshot of a derivation
@@ -198,9 +227,14 @@ renamed, and the regression that was supposed to catch that had been failing
 unnoticed. Derive it where you need it.
 
 Do not glob. Alphabetical order of this tree leaves references unresolved with
-a zero exit status, and it puts `wb_dma_cfg_pkg/` after the files whose
+a zero exit status, and it puts `wb_dma_cfg_pkg.pss` after the files whose
 `compile if` reads it -- a forward reference, since compile-time elaboration
 reads constants only from previously-processed source units (PSS 3.1 19.1.2).
+
+The same rule binds `target_cfg_pkg` ahead of `wb_dma_cfg_pkg.pss`, and there
+it is worse: a target profile that lands too late is not a diagnostic, it is a
+silent fallback to the default. The derived order gets this right because
+`wb_dma_cfg_pkg.pss` names `target_cfg_pkg`; a hand-written filelist would not.
 
 Each `wb_dma_ch_c` owns a top-level `wb_dma_ch_regs_c` group bound to its
 own non-allocatable region at `WB_DMA_CH_BASE + chan*WB_DMA_CH_STRIDE`, rather
@@ -214,7 +248,6 @@ dfm run op-model-sv                      # derives the order, links, generates
 pssparser $(pss-order --from-flow src/pss --task src --relative-to .)
 pssparser $(pss-order . --include 'src/pss/**/*.pss' \
     --include 'tests/pss/**/*.pss' \
-    --exclude 'src/pss/wb_dma_cfg_pkg/wb_dma_cfg_nonblocking.pss' \
     --root pss_top)
 ```
 

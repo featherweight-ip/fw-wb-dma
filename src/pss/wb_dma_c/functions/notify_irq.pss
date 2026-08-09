@@ -77,7 +77,7 @@ import wb_dma_cfg_pkg::*;
 
 extend component wb_dma_c {
 
-    compile if (wb_dma_cfg_pkg::WB_DMA_HAS_BLOCKING) {
+    compile if (wb_dma_cfg_pkg::HAS_BLOCKING) {
 
         target function void notify_irq() {
             bool posted;

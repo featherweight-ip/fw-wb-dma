@@ -17,15 +17,14 @@ is what a snapshot of a derivation does.
 
 ```sh
 pss-order . --include 'src/pss/**/*.pss' --include 'tests/pss/**/*.pss' \
-            --exclude 'src/pss/wb_dma_cfg_pkg/wb_dma_cfg_nonblocking.pss' \
             --root pss_top --profile total-topological
 ```
 
-The `--exclude` picks a build profile: `src/pss/wb_dma_cfg_pkg/` holds two
-mutually-exclusive files declaring the same package, and exactly one may be
-selected. `pss-order --from-flow src/pss --task src` reads that choice from the
-build instead of restating it, but only for the device tree -- spanning both
-trees has no task to read.
+No `--exclude`, and no profile to select. Nothing injects `target_cfg_pkg` on a
+bare `pss-order`/`pssparser` command line, so `wb_dma_cfg_pkg::HAS_BLOCKING`
+takes its default of true -- which is what every scenario here requires (see the
+`compile assert` in `pss_top.pss`). The convention is
+`docs/target-cfg-contract.md`.
 
 Note the single `base` spanning both trees: `src/pss/` and `tests/pss/` are
 grouping directories, not units, so the two are interleaved by dependency
@@ -55,7 +54,6 @@ than glob:
 ```sh
 pssparser $(pss-order . --include 'src/pss/**/*.pss' \
     --include 'tests/pss/**/*.pss' \
-    --exclude 'src/pss/wb_dma_cfg_pkg/wb_dma_cfg_nonblocking.pss' \
     --root pss_top)
 ```
 

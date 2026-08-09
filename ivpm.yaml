@@ -17,6 +17,8 @@ package:
       url: https://git.dvkit.org/psstools/pss-skills.git
     - name: peakrdl-pss
       url: https://git.dvkit.org/psstools/peakrdl-pss.git
+    - name: dv-flow-libproject
+      url: https://git.dvkit.org/dv-flow/dv-flow-libproject.git
     - name: dv-flow-librdl
       url: https://git.dvkit.org/dv-flow/dv-flow-librdl.git
     - name: fw-hdl

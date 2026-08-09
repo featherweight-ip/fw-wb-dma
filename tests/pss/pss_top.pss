@@ -15,7 +15,7 @@ component pss_top {
     // enforced.
     //
     // The device tree (src/pss) builds on either profile: with
-    // WB_DMA_HAS_BLOCKING it has the end-to-end operations and their actions,
+    // wb_dma_cfg_pkg::HAS_BLOCKING it has the end-to-end operations and their actions,
     // without it just the non-blocking core. This tree does not have that
     // choice. Every scenario below composes end-to-end operations, and
     // wb_dma_hs_c blocks on an imported wb_dma_hs_await_ack() besides -- a
@@ -28,8 +28,8 @@ component pss_top {
     // with no actions and no root, which links clean and tests nothing --
     // precisely the quiet failure mode this project already fights in file
     // ordering. A named error at elaboration is the whole point.
-    compile assert(wb_dma_cfg_pkg::WB_DMA_HAS_BLOCKING,
-        "tests/pss requires a wb_dma_cfg_pkg profile with WB_DMA_HAS_BLOCKING set: every scenario here composes blocking end-to-end operations. Build the non-blocking profile against src/pss alone.");
+    compile assert(wb_dma_cfg_pkg::HAS_BLOCKING,
+        "tests/pss requires a target profile with target_cfg_pkg::HAVE_BLOCKING set (or no target_cfg_pkg at all, which defaults to blocking): every scenario here composes blocking end-to-end operations. Build the non-blocking profile against src/pss alone.");
 
     // Where the register file sits in the map. Non-allocatable: it is MMIO,
     // not memory the solver may hand out for buffers.

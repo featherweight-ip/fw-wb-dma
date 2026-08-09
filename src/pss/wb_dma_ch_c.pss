@@ -32,7 +32,7 @@
 //   blocking   wait_completion, and the end-to-end operations transfer_single,
 //              transfer_list and stop_channel. Each is a *_start() followed by
 //              a wait, and the wait suspends on the `wake` channel below.
-//              Compiled only when wb_dma_cfg_pkg::WB_DMA_HAS_BLOCKING.
+//              Compiled only when wb_dma_cfg_pkg::HAS_BLOCKING.
 //
 // The blocking layer adds no device knowledge -- it adds only the loop. That
 // is what makes the core trustworthy without a second regression: every

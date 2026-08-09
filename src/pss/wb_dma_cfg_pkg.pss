@@ -1,0 +1,63 @@
+// THIS MODEL'S CONFIGURATION, derived from the target's.
+//
+// One file, one constant, one question: does this build of the model expose
+// the blocking layer? Everything downstream reads `wb_dma_cfg_pkg::HAS_BLOCKING`
+// and nothing downstream mentions `target_cfg_pkg` or `compile has`.
+//
+// This used to be two mutually-exclusive files selected by an `exclude:` in
+// `src/pss/flow.yaml`. It is one file now because the choice moved to where it
+// belongs: `target_cfg_pkg` describes the EXECUTION TARGET (see
+// `docs/target-cfg-contract.md`), and this package is only the adapter that
+// turns the target's answer into this model's.
+//
+// WHAT THE FLAG SELECTS, in full:
+//
+//   true   wb_dma_ch_c.wake, wait_completion(), the three blocking end-to-end
+//          operations (transfer_single, transfer_list, stop_channel), their
+//          scenario actions, and wb_dma_c::notify_irq().
+//   false  none of the above exists. The tree is the non-blocking core only:
+//          configuration operations, the three *_start() functions and
+//          check_completion(). There is no end-to-end operation, by design --
+//          firmware writes its own poll loop, in its own environment, where a
+//          spin is free.
+//
+// Everything the non-blocking profile contains is also executed by the
+// blocking one: the blocking wrappers are start() + wait, and wait is a loop
+// over the same CSR decode check_completion() uses. So a SystemVerilog
+// regression exercises the firmware path on every run without building a
+// second image.
+//
+// TWO THINGS ABOUT THE SHAPE BELOW, both load-bearing:
+//
+//   * IT IS NESTED, not one expression. Writing the LRM's own Example275 shape
+//     -- `compile has(V) && target_cfg_pkg::HAVE_BLOCKING` -- is a hard error
+//     in pssparser, which evaluates both operands of a compile-time binary
+//     expression eagerly. Short-circuiting is normative (§8.4.4) but it governs
+//     EVALUATION, not name resolution, and nothing normative exempts a
+//     short-circuited operand from §19.1.2's "previously declared" rule. Nested,
+//     the reference to HAVE_BLOCKING sits in an already-enabled branch and is a
+//     plain resolution. `!compile has(V) || ...` is the same bet mirrored; also
+//     avoid it. Full reasoning in docs/target-cfg-contract.md.
+//
+//   * THE DEFAULT IS TRUE, i.e. the richer model. An unconfigured build that
+//     defaulted to false would silently delete the blocking and scenario layers
+//     and still elaborate, link and test nothing. Defaulting to true fails at
+//     the missing runtime primitive instead -- loudly, with a location.
+//
+// A provider that declares TARGET_CFG_VERSION is obliged to declare every
+// contract constant, which is why HAVE_BLOCKING is referenced directly rather
+// than guarded a second time. That obligation is also what makes a misspelling
+// here a compile error rather than a silent fallback to the default.
+//
+// The empty `package target_cfg_pkg { }` that makes the name resolvable is
+// declared once, in `target_cfg_pkg/target_cfg_decl.pss`, which the derived
+// file order places ahead of this file because this file names it.
+package wb_dma_cfg_pkg {
+
+    compile if (compile has(target_cfg_pkg::TARGET_CFG_VERSION)) {
+        static const bool HAS_BLOCKING = target_cfg_pkg::HAVE_BLOCKING;
+    } else {
+        static const bool HAS_BLOCKING = true;
+    }
+
+}

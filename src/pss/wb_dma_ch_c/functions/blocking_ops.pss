@@ -1,5 +1,5 @@
 // THE BLOCKING LAYER: wait_completion() and the three end-to-end operations
-// built on it. Compiled only with wb_dma_cfg_pkg::WB_DMA_HAS_BLOCKING.
+// built on it. Compiled only with wb_dma_cfg_pkg::HAS_BLOCKING.
 //
 // ============================================================================
 // WHY FOUR OPERATIONS SHARE ONE FILE
@@ -41,7 +41,7 @@ import wb_dma_types_pkg::*;
 
 extend component wb_dma_ch_c {
 
-  compile if (wb_dma_cfg_pkg::WB_DMA_HAS_BLOCKING) {
+  compile if (wb_dma_cfg_pkg::HAS_BLOCKING) {
 
     // ========================================================================
     // wait_completion -- the shared wait point (operation model §3.1)

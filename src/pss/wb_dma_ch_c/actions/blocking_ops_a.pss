@@ -1,5 +1,5 @@
 // THE SCENARIO LAYER over the blocking operations. Compiled only with
-// wb_dma_cfg_pkg::WB_DMA_HAS_BLOCKING.
+// wb_dma_cfg_pkg::HAS_BLOCKING.
 //
 // One file for the same two reasons blocking_ops.pss is one file: these three
 // actions appear and disappear together with one flag and no build wants a
@@ -36,7 +36,7 @@ import wb_dma_types_pkg::*;
 
 extend component wb_dma_ch_c {
 
-  compile if (wb_dma_cfg_pkg::WB_DMA_HAS_BLOCKING) {
+  compile if (wb_dma_cfg_pkg::HAS_BLOCKING) {
 
     // Scenario-layer wrapper for transfer_single().
     action transfer_single_a {

@@ -12,49 +12,15 @@
 // class (no process, no ports): the register file owns an array of these and the
 // engine mutates their working state.
 
-// The per-channel register file: eight 32-bit registers, offsets auto-assign at
-// stride 4 (0x00..0x1c, 0x20 byte span). Masks capture the access contract:
+// The per-channel register bank class -- `wb_dma_ch_regs`, an fw_reg_block of
+// eight 32-bit registers at stride 4 (0x00..0x1c, 0x20 byte span) -- is
+// GENERATED from src/rdl/wb_dma_ch_regs.rdl into wb_dma_reg_pkg (dv-flow task
+// `reg-model`). So are the three masks that capture its access contract:
 //   sw_wmask  -- bits the host may write (RW config + the WO STOP pulse + CH_EN)
 //   hw_wmask  -- bits the engine drives (status + ROC int-source, plus CH_EN and
 //                STOP which hardware auto-clears on done/err and on abort)
 //   rclr_mask -- int-source bits cleared as a side effect of a host CSR read
-class wb_dma_ch_regs extends fw_reg_block #(32);
-    fw_reg #(wb_dma_csr_t) csr;
-    fw_reg #(wb_dma_sz_t)  sz;
-    fw_reg #(bit [31:0])   adr0, am0, adr1, am1, desc, swptr;
-
-    // Each register self-registers with this block (the `this` parent argument),
-    // so offsets auto-assign at the uniform stride in construction order:
-    // csr 0x00, sz 0x04, adr0 0x08, am0 0x0c, adr1 0x10, am1 0x14, desc 0x18,
-    // swptr 0x1c -> size() == 0x20.
-    function new(string name);
-        super.new(name);
-        csr   = new("csr",   this, .sw_wmask(csr_sw_wmask()),
-                                   .hw_wmask(csr_hw_wmask()),
-                                   .rclr_mask(csr_rclr()));
-        sz    = new("sz",    this);
-        adr0  = new("adr0",  this);
-        am0   = new("am0",   this, .reset(32'hffff_fffc));   // reset value (spec §4.4.4)
-        adr1  = new("adr1",  this);
-        am1   = new("am1",   this, .reset(32'hffff_fffc));
-        desc  = new("desc",  this);
-        swptr = new("swptr", this);
-    endfunction
-
-    static function wb_dma_csr_t csr_hw_wmask();
-        return '{ busy:1, done:1, err:1,
-                  int_chk_done:1, int_done:1, int_err:1,
-                  ch_en:1, stop:1, default:'0 };
-    endfunction
-    static function wb_dma_csr_t csr_sw_wmask();
-        return '{ ine_chk_done:1, ine_done:1, ine_err:1, rest_en:1, prio:'1,
-                  stop:1, sz_wb:1, use_ed:1, ars:1, mode:1,
-                  inc_src:1, inc_dst:1, src_sel:1, dst_sel:1, ch_en:1, default:'0 };
-    endfunction
-    static function wb_dma_csr_t csr_rclr();
-        return '{ int_chk_done:1, int_done:1, int_err:1, default:'0 };
-    endfunction
-endclass
+// Change a bit position or an access rule in the RDL, not here.
 
 class wb_dma_ch;
     int unsigned id;

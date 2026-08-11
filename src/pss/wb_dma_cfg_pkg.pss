@@ -49,9 +49,11 @@
 // than guarded a second time. That obligation is also what makes a misspelling
 // here a compile error rather than a silent fallback to the default.
 //
-// The empty `package target_cfg_pkg { }` that makes the name resolvable is
-// declared once, in `target_cfg_pkg/target_cfg_decl.pss`, which the derived
-// file order places ahead of this file because this file names it.
+// There is no `package target_cfg_pkg { }` stub in this tree, and none is
+// needed: `compile has` naming an undeclared package evaluates to false rather
+// than erroring, so an unconfigured build reaches the `else` below. When a
+// provider IS present it comes from pssc's target prelude, which is processed
+// ahead of every file here.
 package wb_dma_cfg_pkg {
 
     compile if (compile has(target_cfg_pkg::TARGET_CFG_VERSION)) {

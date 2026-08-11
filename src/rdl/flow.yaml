@@ -1,0 +1,43 @@
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+fragment:
+  # The DEVICE register model, and the SystemVerilog projection generated from
+  # it.
+  #
+  # `src/rdl/*.rdl` is the source of truth for the DMA register file: offsets,
+  # bit positions, reset values and access semantics are stated once, here, and
+  # reach the SPL model as generated code -- the same relationship src/pss has
+  # with the operation model. Nothing downstream should restate a bit position.
+  #
+  # `wb_dma.rdl` `includes wb_dma_ch_regs.rdl, so only the top file is listed;
+  # the directory is an incdir so the `include resolves.
+  tasks:
+  - name: rdl-src
+    uses: std.FileSet
+    with:
+      type: systemRDLSource
+      incdirs: ["."]
+      include:
+      - wb_dma.rdl
+
+  # The fw-hdl class projection: wb_dma_regs / wb_dma_ch_regs (fw_reg_block)
+  # plus the packed field structs, in package wb_dma_reg_pkg.
+  #
+  # NUM_CH is a build-time RDL parameter, so the emitted `bank[]` array is
+  # STATIC. 4 is the RDL default and matches WB_DMA_MAX_CH in the PSS model;
+  # raise it here (`-P NUM_CH=8`) and in the model's num_ch together.
+  #
+  # --strict is deliberately OFF: the map legitimately carries three constructs
+  # fw-hdl cannot represent (the write-only STOP pulse and the three `intr`
+  # aggregation fields). They are reported per-field and annotated in the
+  # generated source; see docs/rdl-reg-model-migration.md.
+  - export: reg-model
+    uses: rdl.Export
+    needs: [rdl-src]
+    with:
+      format: fw-hdl
+      top: wb_dma_regs
+      filename: wb_dma_reg_pkg.sv
+      args: ["-P", "NUM_CH=4"]
+      options:
+        package-name: wb_dma_reg_pkg
+        type-style: lexical

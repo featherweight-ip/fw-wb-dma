@@ -109,6 +109,7 @@ package:
 
   imports:
   - uvm-dv-project.yaml     # local base project (src-*/run-* API, sv-*) + dv.* capabilities
+  - rdl                     # PeakRDL integration (dv-flow-librdl): rdl.FwHdl et al
   - fw-hdl                  # fw_hdl_pkg + fw_std_pkg / fw_mem_if
   - fw.proto.wb             # Wishbone transactors + adapters
   - fw.proto.gpio           # GPIO transactors
@@ -149,6 +150,7 @@ package:
   - { name: flags-run-dbg,  uses: hdlsim.SimRunArgsDbg,  with: { sim: "${{ sim }}" } }
 
   fragments:
+  - src/rdl/flow.yaml
   - src/pss/flow.yaml
   - src/spl/flow.yaml
   - src/spl-rtl/flow.yaml

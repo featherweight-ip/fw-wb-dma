@@ -11,6 +11,12 @@ fragment:
   # model-component .svh includes. The dir now holds exactly one package, so the
   # sv-package glob sequences it -- no explicit include needed.
   tasks:
+  #
+  # `reg-model` (src/rdl/flow.yaml) is the REGISTER MODEL: wb_dma_reg_pkg,
+  # generated from src/rdl/*.rdl by peakrdl-fw-hdl. wb_dma_spl_pkg imports it,
+  # so it compiles between the fw-hdl library it is built on (fw_reg_block /
+  # fw_reg) and this fragment's own sources -- hence its position in the list:
+  # `needs` order IS compile order.
   - export: spl
     uses: sv-package
-    needs: [fw-hdl.hdl.sv-src, fw.proto.wb.files, fw.proto.gpio.files]
+    needs: [fw-hdl.hdl.sv-src, reg-model, fw.proto.wb.files, fw.proto.gpio.files]

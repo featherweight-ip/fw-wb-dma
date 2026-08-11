@@ -34,6 +34,14 @@ package wb_dma_spl_pkg;
     import fw_proto_gpio_pkg::*;    // gpio_drive_if (interrupt-level output API only;
     export fw_proto_gpio_pkg::*;    // the transactor bridges ride along unused -- the
                                     // GPIO xtor is instanced only at the wb_dma_spl edge)
+    // The REGISTER MODEL, generated from src/rdl/*.rdl by peakrdl-fw-hdl (dv-flow
+    // task `reg-model`): the packed field structs (wb_dma_csr_t, wb_dma_sz_t,
+    // wb_dma_gcsr_t, wb_dma_intmsk_t, wb_dma_intsrc_t, wb_dma_swptr_t) and the
+    // two fw_reg_block classes (wb_dma_ch_regs, wb_dma_regs). Re-exported so a
+    // consumer that imports wb_dma_spl_pkg sees the register types too, exactly
+    // as when they were declared here.
+    import wb_dma_reg_pkg::*;
+    export wb_dma_reg_pkg::*;
 
     // ---- shared types (no dedicated types package) ---------------------------
     // Interrupt cause delivered through wb_dma_irq_if.
@@ -45,57 +53,10 @@ package wb_dma_spl_pkg;
         wb_dma_cause_e cause;
     } wb_dma_irq_evt_t;
 
-    // ---- MMIO field layouts (2-state packed structs, MSB-first; spec Tables 6/7)
-    // These are the typed faces of the channel registers, consumed by the fw-hdl
-    // register model (`fw_reg #(T)`): a named field is just a slice of T, so the
-    // host programs and the engine inspects bits by name (r.read().ch_en) with no
-    // hand-maintained bit offsets. Bit positions match the OpenCores wb_dma RTL.
-    typedef struct packed {
-        bit [8:0] reserved;       // 31:23 RO
-        bit       int_chk_done;   // 22 ROC  (chunk-done interrupt source)
-        bit       int_done;       // 21 ROC  (transfer-done interrupt source)
-        bit       int_err;        // 20 ROC  (error interrupt source)
-        bit       ine_chk_done;   // 19 RW   (chunk-done interrupt enable)
-        bit       ine_done;       // 18 RW
-        bit       ine_err;        // 17 RW
-        bit       rest_en;        // 16 RW
-        bit [2:0] prio;           // 15:13 RW
-        bit       err;            // 12 RO   (status: errored)
-        bit       done;           // 11 RO   (status: complete)
-        bit       busy;           // 10 RO   (status: transferring)
-        bit       stop;           //  9 WO   (host abort pulse)
-        bit       sz_wb;          //  8 RW
-        bit       use_ed;         //  7 RW   (external descriptor)
-        bit       ars;            //  6 RW   (auto-restart)
-        bit       mode;           //  5 RW   (1 = HW handshake)
-        bit       inc_src;        //  4 RW
-        bit       inc_dst;        //  3 RW
-        bit       src_sel;        //  2 RW   (0 = IF0, 1 = IF1)
-        bit       dst_sel;        //  1 RW
-        bit       ch_en;          //  0 RW   (channel enable)
-    } wb_dma_csr_t;
-
-    typedef struct packed {
-        bit [6:0]  reserved1;     // 31:25 RO
-        bit [8:0]  chk_sz;        // 24:16 RW  (chunk size in words; 0 => whole TOT_SZ)
-        bit [3:0]  reserved0;     // 15:12 RO
-        bit [11:0] tot_sz;        // 11:0  RW  (total transfer size in words)
-    } wb_dma_sz_t;
-
-    // Global CSR (register-file offset 0x00). Only PAUSE is implemented; the RTL
-    // reads it back as {31'h0, paused}. Typed so callers say `.read().pause`.
-    typedef struct packed {
-        bit [30:0] reserved;      // 31:1 RO
-        bit        pause;         //  0   RW  (pause all DMA transfers)
-    } wb_dma_gcsr_t;
-
-    // Interrupt mask / source vector (INT_MASK_A/B at 0x04/0x08, INT_SRC_A/B at
-    // 0x0c/0x10): one bit per channel (bit N = channel N), MSB reserved. `.ch` is
-    // the per-channel slice (was a bare [30:0] index).
-    typedef struct packed {
-        bit        reserved;      // 31   RO
-        bit [30:0] ch;            // 30:0 per-channel interrupt bits
-    } wb_dma_intvec_t;
+    // The MMIO field layouts (wb_dma_csr_t, wb_dma_sz_t, wb_dma_gcsr_t,
+    // wb_dma_intmsk_t / wb_dma_intsrc_t, wb_dma_swptr_t) used to be declared
+    // here. They now come from wb_dma_reg_pkg, generated from src/rdl -- the
+    // bit positions are stated once, in SystemRDL, and nothing restates them.
 
     // ---- DMA-specific APIs (each ships a `FW_WB_DMA_*_IMP macro) -------------
     `include "wb_dma_hs_if.svh"

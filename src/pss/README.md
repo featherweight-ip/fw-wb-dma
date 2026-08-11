@@ -35,8 +35,11 @@ convention that carries the answer is `docs/target-cfg-contract.md`; in short:
 
 | File | What it is |
 |---|---|
-| `target_cfg_pkg/target_cfg_decl.pss` | the empty declaration, so `compile has` has a package to name when nothing injects one. |
-| `wb_dma_cfg_pkg.pss` | the adapter. Derives `HAS_BLOCKING` from the target's answer, defaulting **true** when unconfigured. Every use site reads this and nothing else. |
+| `wb_dma_cfg_pkg.pss` | the adapter, and the only file. Derives `HAS_BLOCKING` from the target's answer, defaulting **true** when unconfigured. Every use site reads this and nothing else. |
+
+There is no `target_cfg_pkg` stub in this tree. `compile has` naming an
+undeclared package evaluates to false rather than erroring, so the unconfigured
+case reaches the `else` branch on its own.
 
 The answer itself is not a file here. pssc injects `target_cfg_pkg` ahead of
 these sources: `op-model-sv` publishes `HAVE_BLOCKING=true`, and the
@@ -231,10 +234,12 @@ a zero exit status, and it puts `wb_dma_cfg_pkg.pss` after the files whose
 `compile if` reads it -- a forward reference, since compile-time elaboration
 reads constants only from previously-processed source units (PSS 3.1 19.1.2).
 
-The same rule binds `target_cfg_pkg` ahead of `wb_dma_cfg_pkg.pss`, and there
-it is worse: a target profile that lands too late is not a diagnostic, it is a
-silent fallback to the default. The derived order gets this right because
-`wb_dma_cfg_pkg.pss` names `target_cfg_pkg`; a hand-written filelist would not.
+The same rule binds the injected `target_cfg_pkg` ahead of
+`wb_dma_cfg_pkg.pss`, and there it is worse: a target profile that lands too
+late is not a diagnostic, it is a silent fallback to the default. That one is
+not this tree's to get right -- pssc processes a target's prelude before any
+user source (`docs/target-cfg-contract.md`), so the provider is ahead of every
+file here by construction.
 
 Each `wb_dma_ch_c` owns a top-level `wb_dma_ch_regs_c` group bound to its
 own non-allocatable region at `WB_DMA_CH_BASE + chan*WB_DMA_CH_STRIDE`, rather

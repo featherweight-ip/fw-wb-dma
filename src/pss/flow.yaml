@@ -48,9 +48,9 @@ fragment:
   # `target_cfg:` rather than by selecting different files. See
   # `docs/target-cfg-contract.md`.
   #
-  # `target_cfg_pkg/target_cfg_decl.pss` is the empty declaration that makes the
-  # name resolvable when NOTHING injects (a bare `pssparser` run, or another
-  # tool); the adapter then defaults to the richer model.
+  # When NOTHING injects (a bare `pssparser` run, or another tool) there is no
+  # `target_cfg_pkg` at all, `compile has` on it is false, and the adapter
+  # defaults to the richer model. No stub declaration is carried here.
   - name: src
     uses: pss.FileSet
     with:

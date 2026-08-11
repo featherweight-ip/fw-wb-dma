@@ -8,10 +8,15 @@
 // (wb_dma_de) reads/mutates the channels' working state directly; this component
 // does not run a process.
 //
-// One side effect resists a pure register: INT_SRC_A/B are masked snapshot views
-// over the engine's pending-source vector (read-only; cleared by a channel-CSR
-// read, as in the RTL), so they stay explicit bus-read logic here rather than
-// stored registers.
+// The block itself -- `wb_dma_regs`, globals plus the per-channel bank array --
+// is GENERATED from src/rdl/*.rdl into wb_dma_reg_pkg (dv-flow task
+// `reg-model`); this file holds only the behaviour wrapped around it.
+//
+// INT_SRC_A/B are hardware-driven registers (sw_wmask 0): they hold the MASKED
+// snapshot of the engine's pending-source vector, published by signal_int()
+// whenever a source or a mask moves, rather than computed inside the bus read.
+// Reading them has no side effect; the sources themselves are cleared by a
+// channel-CSR read, as in the RTL.
 
 typedef class wb_dma_rf;
 
@@ -27,42 +32,37 @@ class wb_dma_ch_start_obs implements fw_reg_wr_if #(32);
     endtask
 endclass
 
-// The top register file: global registers + an array of per-channel sub-blocks
-// at 0x20 base / 0x20 stride. The channel banks are the same `wb_dma_ch_regs`
-// the engine-facing `wb_dma_ch` objects own, nested here so one offset decode
-// spans the whole map.
-class wb_dma_regs extends fw_reg_block #(32);
-    fw_reg #(wb_dma_gcsr_t)   csr;                  // global CSR (PAUSE @ bit0)
-    fw_reg #(wb_dma_intvec_t) int_msk_a, int_msk_b; // per-channel interrupt masks
-    // The per-channel banks. THIS object creates and owns them, because the
-    // register map is one artifact with one root: a bank at 0x20 + i*0x20 is
-    // part of the map by definition of the address decode. Consumers (the
-    // channel objects, the engine, the reference model) hold views onto these.
-    wb_dma_ch_regs            bank[];
-
-    function new(string name, int unsigned n_ch);
-        super.new(name);
-        // Globals self-register at the block cursor: csr 0x00, int_msk_a 0x04,
-        // int_msk_b 0x08.
-        csr       = new("csr",       this);
-        int_msk_a = new("int_msk_a", this);
-        int_msk_b = new("int_msk_b", this);
-        // INT_SRC_A/B (0x0c/0x10) are derived read-only masked views over the
-        // engine's pending-source vector (see wb_dma_rf.host_read); they are not
-        // stored registers and are intentionally NOT part of the block.
-        //
-        // The per-channel banks go in at their fixed base (0x20, stride 0x20).
-        // Built here rather than donated upward by the channels: creation now
-        // runs the same direction as containment, which is what makes ownership
-        // answerable at all -- and it matches the shape fw-hdl's own reg_dma
-        // reference model uses.
-        bank = new[n_ch];
-        foreach (bank[i]) begin
-            bank[i] = new($sformatf("ch%0d", i));
-            add_block(bank[i], 32 + i*32);
-        end
+// Hardware read provider for INT_SRC_A/B (the register model's `fw_reg_rd_if`
+// hook). INT_SRC is a masked snapshot -- int_srca = int_maska_r & ch_int is a
+// WIRE in the RTL, not a flop -- so the register stores nothing and the value
+// is computed at read time from the engine's pending vector and this bank's
+// mask. A provider, not a stored value pushed on every change: a snapshot has
+// to be exact at the instant of the read, and there is no update site that can
+// guarantee that for a value depending on two independently-moving inputs.
+//
+// on_read() is a pure function with no side effects, which is the other half of
+// the contract: unlike a channel CSR read, reading INT_SRC clears nothing.
+class wb_dma_int_src_view implements fw_reg_rd_if #(32);
+    local wb_dma_rf m_rf;
+    local bit       m_bank_b;      // 0 = bank A (inta_o), 1 = bank B (intb_o)
+    function new(wb_dma_rf rf, bit bank_b); m_rf = rf; m_bank_b = bank_b; endfunction
+    virtual function bit [31:0] on_read(input bit [31:0] stored);
+        return {1'b0, m_rf.int_pending & (m_bank_b ? m_rf.regs.int_msk_b.read().ch
+                                                   : m_rf.regs.int_msk_a.read().ch)};
     endfunction
 endclass
+
+// The top register file (`wb_dma_regs`: csr / int_msk_a / int_msk_b /
+// int_src_a / int_src_b, plus bank[] at 0x20 base, 0x20 stride) is generated
+// into wb_dma_reg_pkg from src/rdl/wb_dma.rdl. The per-channel banks are the
+// same `wb_dma_ch_regs` objects the engine-facing `wb_dma_ch` objects hold
+// views of, nested there so one offset decode spans the whole map.
+//
+// The bank array is sized at BUILD time by the RDL's NUM_CH parameter (4, set
+// in src/rdl/flow.yaml), which is the RTL's `ch_count`. The runtime `n_ch`
+// below is a different quantity -- how many of those channels this instance
+// uses -- and must not exceed it. Same split the PSS model makes between
+// WB_DMA_MAX_CH and wb_dma_c.num_ch.
 
 class wb_dma_rf extends fw_component;
     int unsigned n_ch;
@@ -86,19 +86,29 @@ class wb_dma_rf extends fw_component;
         this.n_ch = n_ch;
         // The MAP first -- it owns the whole address space including the channel
         // banks -- then the channel objects, each handed a view of its region.
-        regs = new("regs", n_ch);
+        // The map's shape is fixed by the RDL, so `new` takes no channel count;
+        // n_ch selects how many of its banks this instance drives.
+        regs = new("regs");
+        if (n_ch > $size(regs.bank))
+            $fatal(1, "%m: n_ch=%0d exceeds the generated bank count %0d (raise NUM_CH in src/rdl/flow.yaml)",
+                   n_ch, $size(regs.bank));
         ch   = new[n_ch];
         foreach (ch[i]) ch[i] = new(i, regs.bank[i]);
         int_pending = '0;
     endfunction
 
     function void build();
+        wb_dma_int_src_view src_a = new(this, 1'b0);
+        wb_dma_int_src_view src_b = new(this, 1'b1);
         host = new(this);
         // Wire the CH_EN-start hardware hook onto every channel CSR.
         foreach (ch[i]) begin
             wb_dma_ch_start_obs obs = new(this, i);
             ch[i].regs.csr.add_wr(obs);
         end
+        // ... and the masked-snapshot read providers onto INT_SRC_A/B.
+        regs.int_src_a.set_rd(src_a);
+        regs.int_src_b.set_rd(src_b);
     endfunction
 
     function bit  paused();   return regs.csr.read().pause;                           endfunction
@@ -263,56 +273,49 @@ class wb_dma_rf extends fw_component;
         `fw_op_end(hop)
     endtask
 
-    // The bus access routes through the register block (offset decode + register
-    // semantics); only the derived INT_SRC views are special-cased.
+    // The bus access routes through the register block: one offset decode, and
+    // the register semantics (sw_wmask, hw_wmask, read-to-clear) come from the
+    // generated map. No register is special-cased here any more -- INT_SRC_A/B
+    // are ordinary read-only registers whose value a read provider supplies
+    // (see wb_dma_int_src_view), so a write to them is dropped by their zero
+    // sw_wmask rather than by an offset test.
     virtual task host_write(output bit err, input logic [31:0] addr,
                             input logic [31:0] data, input logic [3:0] strb);
         bit [11:0] off = addr[11:0];          // register file occupies < 4 KB
         err = 1'b0;
-        if (off != 12'h0c && off != 12'h10)   // INT_SRC_A/B are read-only
-            regs.write_val(off, data);
+        regs.write_val(off, data);
         signal_int();                          // mask writes can move the int level
     endtask
 
     virtual task host_read(output logic [31:0] data, output bit err,
                            input logic [31:0] addr);
         bit [11:0] off = addr[11:0];
-        err = 1'b0; data = '0;
-        case (off)
-            // INT_SRC_A/B are READ-ONLY masked snapshots -- reading them does NOT
-            // clear anything (faithful to the RTL: int_srca/int_srcb are wires, and
-            // the source bits are cleared only by a channel-CSR read, below).
-            12'h0c: data = {1'b0, int_pending & regs.int_msk_a.read().ch};
-            12'h10: data = {1'b0, int_pending & regs.int_msk_b.read().ch};
-            default: begin
-                data = regs.read_val(off);        // sw bus read (register semantics)
-                // RTL semantics (wb_dma_ch_rf: ch_csr_re clears int_src_r): reading
-                // a channel's CSR clears THAT channel's pending interrupt source.
-                // Channel banks are at 0x20 base / 0x20 stride; the CSR is the bank
-                // base (off aligned to 0x20, off >= 0x20, within the channel range).
-                if (off[4:0] == 5'h0 && off >= 12'h20 &&
-                    off < 12'(12'h20 + n_ch*32)) begin
-                    int unsigned idx  = (off - 12'h20) >> 5;
-                    bit [30:0]   prev = int_pending;
-                    int_pending[idx] = 1'b0;
-                    // Row 8 (`int_pending_clear`): the DEASSERT half, and the
-                    // one that was previously undiagnosable. This clear is a
-                    // side effect of an ordinary CSR read -- a status poll, a
-                    // reference model, a waveform dump reading the register --
-                    // so an interrupt can disappear because something merely
-                    // LOOKED at it. Attributing that to the read is the whole
-                    // value of the record; `by` exists so a second cause
-                    // (reset) can be told apart from this one.
-                    `fw_ev_state(dbg_if(), FW_L_TXN, "rf.int_pending_clear")
-                        `fw_subject(idx)
-                        `fw_field_u8_as("ch", idx)
-                        `fw_field_u8_as("by", 0)         // 0 = csr_read, 1 = reset
-                        `fw_state_change(longint'(prev), longint'(int_pending),
-                                         FW_ACTOR_SW, 0)
-                    `fw_ev_end
-                end
-            end
-        endcase
+        err = 1'b0;
+        data = regs.read_val(off);            // sw bus read (register semantics)
+        // RTL semantics (wb_dma_ch_rf: ch_csr_re clears int_src_r): reading a
+        // channel's CSR clears THAT channel's pending interrupt source. Channel
+        // banks are at 0x20 base / 0x20 stride; the CSR is the bank base (off
+        // aligned to 0x20, off >= 0x20, within the channel range).
+        if (off[4:0] == 5'h0 && off >= 12'h20 &&
+            off < 12'(12'h20 + n_ch*32)) begin
+            int unsigned idx  = (off - 12'h20) >> 5;
+            bit [30:0]   prev = int_pending;
+            int_pending[idx] = 1'b0;
+            // Row 8 (`int_pending_clear`): the DEASSERT half, and the one that
+            // was previously undiagnosable. This clear is a side effect of an
+            // ordinary CSR read -- a status poll, a reference model, a waveform
+            // dump reading the register -- so an interrupt can disappear because
+            // something merely LOOKED at it. Attributing that to the read is the
+            // whole value of the record; `by` exists so a second cause (reset)
+            // can be told apart from this one.
+            `fw_ev_state(dbg_if(), FW_L_TXN, "rf.int_pending_clear")
+                `fw_subject(idx)
+                `fw_field_u8_as("ch", idx)
+                `fw_field_u8_as("by", 0)         // 0 = csr_read, 1 = reset
+                `fw_state_change(longint'(prev), longint'(int_pending),
+                                 FW_ACTOR_SW, 0)
+            `fw_ev_end
+        end
         signal_int();                          // a channel-CSR read-clear can deassert the line
     endtask
 endclass

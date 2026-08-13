@@ -1,4 +1,16 @@
 // ---- single-channel SW block-copy sequence -------------------------------
+//
+// Driven through the GENERATED operation model (wb_dma_c_pkg) rather than by
+// hand-written register writes. Two register offsets and one CSR bit layout
+// left this file when it was migrated; what remains is what the test is
+// actually about -- which channel, from where to where, how much.
+//
+// The assertion also got stronger. `wait_int` could only prove that channel 0's
+// INT_SRC bit had set, and INT_SRC is cause-BLIND: a completion and an abort
+// set the same bit. `transfer_single` returns the cause, so a channel that
+// errored can no longer pass this sequence.
+//
+// Design: docs/uvm-op-layer-adoption.md §7.1.
 class wb_dma_sw_copy_seq extends wb_dma_base_seq;
     `uvm_object_utils(wb_dma_sw_copy_seq)
     bit src_sel = 0;
@@ -10,21 +22,24 @@ class wb_dma_sw_copy_seq extends wb_dma_base_seq;
     function new(string name = "wb_dma_sw_copy_seq"); super.new(name); endfunction
 
     task body();
-        logic [31:0] v;
+        wb_dma_status_e st;
 
         model.irqc.reset();
         preload(src_sel, SRC_BASE, tot, 16'hC0DE);   // fan out to DUT + reference
 
-        reg_write(int_bank ? REG_INT_MASKB : REG_INT_MASKA, 32'hffff_ffff);
-        reg_write(CH_TXSZ(0), mk_sz(chunk, tot));
-        reg_write(CH_ADR0(0), SRC_BASE);
-        reg_write(CH_ADR1(0), DST_BASE);
-        reg_write(CH_CSR(0),  mk_csr(.ch_en(1), .src_sel(src_sel), .dst_sel(dst_sel),
-                                     .inc_src(1), .inc_dst(1), .mode_hs(0), .ars(0),
-                                     .prio(3'd0), .ine_done(1)));
+        // Completion IS the interrupt, so routing is a hard prerequisite: a
+        // channel routed nowhere raises nothing, and transfer_single() would
+        // block forever. 31 bits, not 32 -- INTMSK.ch is a 31-bit field.
+        dma().configure_interrupt_routing(
+            int_bank ? WB_DMA_INT_B : WB_DMA_INT_A, 31'h7fff_ffff);
 
-        wait_int(int_bank ? REG_INT_SRCB : REG_INT_SRCA, 32'h1, v);
-        if (!v[0])
-            `uvm_error("SWCOPY", "channel 0 done interrupt never observed")
+        dma().ch(0).transfer_single(st, mk_cfg(
+            .src(SRC_BASE), .dst(DST_BASE), .tot_sz(tot), .chk_sz(chunk),
+            .src_if(src_sel ? WB_DMA_IF1 : WB_DMA_IF0),
+            .dst_if(dst_sel ? WB_DMA_IF1 : WB_DMA_IF0)));
+
+        if (st != WB_DMA_DONE)
+            `uvm_error("SWCOPY", $sformatf(
+                "channel 0 ended %s, expected WB_DMA_DONE", st.name()))
     endtask
 endclass

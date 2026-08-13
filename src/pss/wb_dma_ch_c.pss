@@ -73,7 +73,7 @@ component wb_dma_ch_c {
     // is the member that needs a real one.
     //
     // WHAT IT BUYS. check_completion() reads CHn_CSR, and that read CLEARS ERR
-    // and the three interrupt-source bits (wb_dma_ch_regs_c.pss Table 6). The
+    // and the three interrupt-source bits (src/rdl/wb_dma_ch_regs.rdl, Table 6). The
     // blocking layer contained that hazard inside a loop that exits holding the
     // value; a firmware caller driving *_start() and check_completion() by hand
     // does not. Two ways to get it wrong -- polling a channel nobody armed, and

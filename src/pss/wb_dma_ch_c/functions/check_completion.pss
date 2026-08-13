@@ -18,8 +18,11 @@
 //      DO NOT CALL AGAIN until the next *_start().
 //
 // Both rules exist because reading CHn_CSR is destructive. ERR and the three
-// interrupt-source bits are read-to-clear (wb_dma_ch_regs_c.pss, Table 6
-// "12 ROC"), so this call CONSUMES the completion it reports. A second call
+// interrupt-source bits are read-to-clear (src/rdl/wb_dma_ch_regs.rdl, Table 6
+// "12 ROC"), so this call CONSUMES the completion it reports. PSS has no
+// read-to-clear concept, so the generated wb_dma_csr_s shows those bits as
+// plain fields; the RDL is where the behaviour is stated, and this rule is how
+// the model honours it. A second call
 // after DONE does not re-report DONE; it reads a channel whose status has
 // already been taken and answers PENDING, forever. That is the failure this
 // guards against, and it is invisible from the device side -- a stale read and

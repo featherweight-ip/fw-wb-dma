@@ -44,8 +44,8 @@ class wb_dma extends fw_component;
 
     function void connect();
         // Subscribe the propagation block to rf's interrupt-state seam. That seam
-        // fires on every event that can move inta/intb -- a source SET (the engine's
-        // raise_int), a mask write, or a CSR read-clear -- so the LEVEL path is fully
+        // fires on every event that can move inta/intb -- a source SET (a CSR int
+        // bit), a mask write, or a CSR read-clear -- so the LEVEL path is fully
         // internal. de.irq is deliberately NOT wired here: it is the OPTIONAL cause
         // seam an external scoreboard may bind.
         rf.add_int_sink(irqc);

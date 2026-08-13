@@ -5,10 +5,89 @@
 // signal-level DUTs.
 class wb_dma_base_seq extends uvm_sequence #(fwvip_wb_transaction);
     `uvm_object_utils(wb_dma_base_seq)
-    wb_dma_model_base model;     // set by the test before start (backdoor access)
-    wb_dma_ref_model  ref_model; // always-on reference (fetched lazily; null if absent)
+    wb_dma_model_base      model;     // set by the test before start (backdoor access)
+    wb_dma_ref_model       ref_model; // always-on reference (fetched lazily; null if absent)
+    wb_dma_pss_mem_adapter pss;       // the generated operation model's import seam
 
     function new(string name = "wb_dma_base_seq"); super.new(name); endfunction
+
+    // Bind this sequence to the adapter, so operation-layer accesses issue on
+    // THIS sequencer, in order with any raw reg_write/reg_read the sequence
+    // still does. The adapter and the device handle outlive sequences; only
+    // this pointer is per-run.
+    //
+    // `dma()` below is how a sequence reaches the operation model:
+    //
+    //     dma().ch(0).transfer_single(st, cfg);
+    //
+    // Design: docs/uvm-op-layer-adoption.md §6.1, §6.4.
+    virtual task pre_body();
+        if (pss == null)
+            void'(uvm_config_db #(wb_dma_pss_mem_adapter)::get(null, "", "pss", pss));
+        if (pss != null) pss.seq = this;
+    endtask
+
+    virtual task post_body();
+        // Leaving a stale pointer to a finished sequence behind would let a
+        // later operation-layer call issue items on a sequence that is no
+        // longer running -- which UVM reports far from the cause.
+        if (pss != null && pss.seq == this) pss.seq = null;
+    endtask
+
+    function wb_dma_c_if dma();
+        if (pss == null)
+            `uvm_fatal("PSSCFG", "no wb_dma_pss_mem_adapter in the config DB; is wb_dma_env built?")
+        return pss.dma;
+    endfunction
+
+    // ---- operation-model configuration ------------------------------------
+    //
+    // Replaces mk_csr()/mk_sz(): the same arguments, assigned to the generated
+    // config struct instead of hand-placed into a register word.
+    //
+    // THE MASKS ARE THE REASON THIS IS A FUNCTION and not a struct literal at
+    // each call site. `wb_dma_ch_cfg_s` in PSS carries
+    // `constraint default src_mask == 0xfffffffc`, but a default constraint
+    // only applies to a RANDOMIZED field; the generated SV struct is plain, so
+    // an uninitialized cfg has src_mask == 0 -- "increment no address bits",
+    // i.e. a transfer that copies one word tot_sz times. The old sequences
+    // never wrote AM0/AM1 and relied on the reset value, so nothing here
+    // carried that knowledge before.
+    //
+    // Design: docs/uvm-op-layer-adoption.md §5.2, §6.4.
+    function wb_dma_ch_cfg_s mk_cfg(
+            bit [31:0]      src,
+            bit [31:0]      dst,
+            int             tot_sz,
+            int             chk_sz       = 0,
+            wb_dma_if_e     src_if       = WB_DMA_IF0,
+            wb_dma_if_e     dst_if       = WB_DMA_IF0,
+            wb_dma_mode_e   mode         = WB_DMA_SOFTWARE,
+            bit [2:0]       prio         = 3'd0,
+            bit             int_on_done  = 1'b1,
+            bit             int_on_err   = 1'b1,
+            bit             int_on_chunk = 1'b0);
+        wb_dma_ch_cfg_s cfg;
+        cfg.src          = src;
+        cfg.dst          = dst;
+        cfg.src_mask     = 32'hffff_fffc;   // linear addressing; see above
+        cfg.dst_mask     = 32'hffff_fffc;
+        cfg.tot_sz       = 12'(tot_sz);
+        cfg.chk_sz       = 9'(chk_sz);
+        cfg.src_if       = src_if;
+        cfg.dst_if       = dst_if;
+        cfg.inc_src      = 1'b1;
+        cfg.inc_dst      = 1'b1;
+        cfg.mode         = mode;
+        cfg.prio         = prio;
+        cfg.auto_restart = 1'b0;
+        cfg.hw_restart_en= 1'b0;
+        cfg.sz_wb        = 1'b0;
+        cfg.int_on_done  = int_on_done;
+        cfg.int_on_err   = int_on_err;
+        cfg.int_on_chunk = int_on_chunk;
+        return cfg;
+    endfunction
 
     // Lazily resolve the reference model published by the top. Sequences that
     // preload source memory fan the fill out to it so the reference computes the
@@ -49,67 +128,18 @@ class wb_dma_base_seq extends uvm_sequence #(fwvip_wb_transaction);
         t.we = 1'b0; t.adr = addr; t.sel = 4'hf;
         finish_item(t);
         data = t.dat;
-        // Bus-observed interrupt sources -> model (was the reg driver's job; the
-        // WB/RTL flavours record done order/count from these, TLM is a no-op).
-        if (addr[11:0] == REG_INT_SRCA[11:0]) model.note_int_src(1'b0, data);
-        if (addr[11:0] == REG_INT_SRCB[11:0]) model.note_int_src(1'b1, data);
     endtask
 
-    // Interrupt-driven, source-agnostic waits. These depend ONLY on the model's
-    // interrupt-change seam (wait_int_change / *_level, signalled by whichever
-    // producer is active -- rf.signal_int for TLM, a GPIO monitor for the xtor/
-    // RTL paths) plus register reads for identity. No `#delay` polling and no
-    // backdoor into the model -- so the identical code runs for all three DUT
-    // flavours. The line LEVEL (persistent) drives the decision; the change
-    // event only wakes us, so an assertion during a bus read is never missed.
-    // A stuck line hangs until the top-level TB $fatal timeout (loud failure).
+    // The interrupt-driven wait helpers that used to live here -- ack_int(),
+    // wait_int() and wait_done() -- are gone. Completion is now the operation
+    // model's business: `wait_completion()` blocks on the channel's `wake`
+    // channel (posted by wb_dma_env's IRQ pump) and decodes err/done from the
+    // channel's own CSR, which is also the read that clears the interrupt. See
+    // docs/uvm-op-layer-adoption.md §6.2 and §6.3.1.
+    //
+    // reg_write/reg_read stay, but as the ADAPTER's plumbing rather than a
+    // stimulus API: wb_dma_pss_mem_adapter issues every operation-layer access
+    // through them, which is what keeps those accesses on this sequencer and in
+    // front of the reference-model tee/forward.
 
-    // Acknowledge (clear) the interrupt of every channel flagged in `srcbits`
-    // by reading its CSR. This is how the wb_dma HARDWARE clears a channel's
-    // interrupt source (reading CH_CSR asserts the RF's ch_csr_re read strobe);
-    // INT_SRC_A/B themselves are read-only snapshots on the RTL. The TLM/SPL
-    // model clears its pending vector on the INT_SRC read instead, so the CSR
-    // read is a harmless no-op there -- keeping this service routine identical
-    // across all three DUT flavours (as a real driver's ISR would be written).
-    task ack_int(logic [31:0] srcbits);
-        logic [31:0] d;
-        for (int c = 0; c < 31; c++)
-            if (srcbits[c]) begin
-                reg_read(CH_CSR(c), d);
-                // The CH_CSR read cleared the interrupt AND carries the err/done
-                // status -- classify the completion cause (cause-aware, unlike the
-                // cause-blind INT_SRC). No-op on the TLM model (engine-fed irqc).
-                model.note_ch_status(c, d);
-            end
-    endtask
-
-    // Wait until `mask` bits are set in the given INT_SRC register, then ack the
-    // signalled channel(s) so the (level-based) interrupt line deasserts.
-    task wait_int(logic [31:0] src_off, logic [31:0] mask, output logic [31:0] val);
-        bit bank = (src_off == REG_INT_SRCB);
-        val = '0;
-        forever begin
-            reg_read(src_off, val);
-            if (|(val & mask)) break;
-            while (!(bank ? model.intb_level() : model.inta_level()))
-                model.wait_int_change();     // sleep until this bank's line asserts
-        end
-        ack_int(val & mask);
-    endtask
-
-    // Block until `n` done interrupts have been reported. Reads INT_SRC on each
-    // asserted interrupt (the reg driver's note_int_src records completions for
-    // the WB/RTL flavours; the engine fills irqc for TLM), then acks the flagged
-    // channels so each completion is counted exactly once and the line clears.
-    task wait_done(int n);
-        logic [31:0] va, vb;
-        forever begin
-            reg_read(REG_INT_SRCA, va);   // driver's note_int_src records dones
-            reg_read(REG_INT_SRCB, vb);
-            ack_int(va | vb);             // clear so they are not re-counted
-            if (model.irqc.n_done >= n) break;
-            while (!model.inta_level() && !model.intb_level())
-                model.wait_int_change();     // sleep until some line asserts
-        end
-    endtask
 endclass

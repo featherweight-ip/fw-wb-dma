@@ -149,7 +149,18 @@ fragment:
         image: "${{ images }}"        # tlm,wb,rtl (default); -D images=... to subset
         case:
         - { name: sw_copy, testname: wb_dma_sw_copy_test, plusargs: [] }
-        - { name: arb,     testname: wb_dma_arb_test,     plusargs: [CMP_BY_CHANNEL] }
+        # CMP_NO_ORDER: the cross-model COMPLETION-ORDER check is not valid for
+        # this test once the operation layer drives it, and the reason is the
+        # reference rather than the DUT. The reference is loosely timed (no
+        # memory latency), so during the ~320ns window the four arms span it
+        # makes far more progress than the real engine does and genuinely
+        # finishes a lower-priority channel first. Atomic arming would remove
+        # the window, but this device has no such idiom -- arming while paused
+        # is dropped, and worse, wedges the RTL engine (docs §7.3.2).
+        # Per-channel DATA and the done COUNT are still compared exactly, and
+        # the DUT's own strict-priority order is still asserted by
+        # env.sb.check_order().
+        - { name: arb,     testname: wb_dma_arb_test,     plusargs: [CMP_BY_CHANNEL, CMP_NO_ORDER] }
         - { name: arb_eq,  testname: wb_dma_arb_eq_test,  plusargs: [CMP_BY_CHANNEL, CMP_NO_ORDER] }
         - { name: err,     testname: wb_dma_err_test,     plusargs: [CMP_BY_CHANNEL] }
     body:
@@ -188,6 +199,38 @@ fragment:
         name: "${{ this.image }}-${{ this.case.name }}"
         testname: "${{ this.case.testname }}"
         plusargs: "${{ this.case.plusargs }}"
+
+  #============================================================================
+  # DIAGNOSTIC: is a CH_EN write honoured while the engine is paused?
+  #
+  #   dfm run uvm-pause-arm              # all three views, reports per view
+  #
+  # DELIBERATELY NOT IN THE `tests` AGGREGATE. It exists to expose a divergence
+  # between the RTL and the SPL class model, so on today's sources it is
+  # EXPECTED to report "DROPPED" on tlm/wb and "DEFERRED" on rtl -- putting that
+  # in the regression would just make the regression red. It reports rather than
+  # asserts; add +PAUSE_ARM_STRICT to make it fail when the arming is dropped,
+  # which is how it becomes a real regression once the model is fixed.
+  #
+  # See tests/uvm/tests/wb_dma_pause_arm_seq.svh for the RTL/model citations.
+  #============================================================================
+  - name: uvm-pause-arm
+    strategy:
+      matrix:
+        image: "${{ images }}"
+        case:
+        - { name: pause_arm,     mode: 1 }   # arm WHILE paused  -> dropped
+        - { name: pause_release, mode: 2 }   # pause/release/arm -> completes
+    body:
+    - name: "${{ this.image }}-${{ this.case.name }}"
+      uses: hdlsim.vlt.SimUVMCase
+      needs:
+      - "sim-img.${{ this.image }}.${{ build }}"
+      - "flags-run-${{ build }}"
+      with:
+        name: "${{ this.image }}-${{ this.case.name }}"
+        testname: wb_dma_pause_arm_test
+        plusargs: ["NO_CMP", "PAUSE_ARM_MODE=${{ this.case.mode }}"]
 
   # ---- observable events: the model's own execution, as a stream ---------------
   # Same arbitration test the regression runs, with the debug facility switched

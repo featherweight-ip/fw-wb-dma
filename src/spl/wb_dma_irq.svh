@@ -14,9 +14,10 @@
 // That level expression moves on exactly three events, all of which reach rf and
 // are published on its wb_dma_int_if seam (int_changed) -- this block's single
 // wake source:
-//   * the engine flagged an irq-worthy event  (rf.raise_int -> a source is SET),
+//   * the engine flagged an irq-worthy event  (a CSR int bit is SET),
 //   * an INT_MSK_A/B write                     (re-routes the aggregate), and
 //   * a channel-CSR read                       (read-to-clear -> the deassert half).
+// All three reach rf.signal_int(), which recomputes the aggregate and publishes.
 // int_changed() only WAKES (sets m_dirty); the aggregate is read ONCE, in run(),
 // from rf -- so the masking lives in exactly one place. wait(m_dirty) is level-
 // sensitive, so a wake landing between evaluate and wait is not lost.

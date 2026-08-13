@@ -1,12 +1,46 @@
-// Shared data types for the WISHBONE DMA/Bridge operation model.
+// Shared declarations for the WISHBONE DMA/Bridge operation model.
 //
-// Plain data with no behaviour: the enums that name the device's modes and the
-// structs that carry an operation's arguments. One file, because these are
-// looked up by TYPE NAME from wherever they are used and are never included
-// selectively -- there is no build that wants the descriptor struct but not the
-// channel config.
+// Plain data with no behaviour: the constants that size the device, the enums
+// that name its modes, and the structs that carry an operation's arguments.
+// One file, because these are looked up by NAME from wherever they are used
+// and are never included selectively -- there is no build that wants the
+// descriptor struct but not the channel config.
+//
+// The DEVICE's parameters live here; the REGISTER MAP's do not. wb_dma_regs_pkg
+// is generated in full from src/rdl and holds every offset, bit position and
+// access rule. What is left over is this: facts about the part, not about its
+// register file.
 package wb_dma_types_pkg {
     import std_pkg::*;      // packed_s, for the descriptor's memory layout
+
+    // ---------------------------------------------------------------------
+    // Device parameters
+    // ---------------------------------------------------------------------
+
+    // The BUILD-TIME channel count (RTL `ch_count`). A property of the part:
+    // it sizes the static register structure, so it is a compile-time constant
+    // and it is what `ch[]` and the environment's `hs[]` are declared with. The
+    // number of channels an instance actually USES is the runtime
+    // wb_dma_c.num_ch attribute, constrained to <= this.
+    //
+    // MUST MATCH `-P NUM_CH` on both exports in src/rdl/flow.yaml -- the same
+    // device parameter, told to the register model. Nothing checks the two
+    // agree: raise NUM_CH alone and the generated group carries more banks than
+    // this model will ever drive; lower it alone and `ch[]` indexes banks that
+    // were never emitted. Raise them together.
+    static const int      WB_DMA_MAX_CH  = 4;
+
+    // The device's MMIO window, for the non-allocatable region the environment
+    // reserves (tests/pss/pss_top.pss): 0x20 bytes of engine-global registers
+    // followed by MAX_CH channel banks of 0x20 bytes each.
+    //
+    // The two literals mirror the RDL's `bank[NUM_CH] @0x20 += 0x20`, and this
+    // is the ONLY place left that restates them -- wb_dma_c::initialize() takes
+    // the bank offsets from the generated group instead. A SIZE is what cannot
+    // be had that way: the generated accessor answers for indices 0..NUM_CH-1,
+    // and asking it where the array ENDS means evaluating it one past the last
+    // element.
+    static const bit[64]  WB_DMA_REG_SPAN = 0x20 + WB_DMA_MAX_CH * 0x20;
 
     // ---------------------------------------------------------------------
     // Enumerations
@@ -188,4 +222,14 @@ package wb_dma_types_pkg {
         rand bit[32]            adr1;   // +0x8  DESC_ADR1, destination
         rand bit[32]            next;   // +0xc  DESC_NEXT, next pointer
     }
+
+    // The same record's geometry, for the code that writes one a word at a
+    // time. MEMORY layout, not register layout: a descriptor lives in the
+    // DMA's address space, so the RDL has nothing to say about it and there is
+    // nothing to generate these from.
+    //
+    // They sit here rather than with write_descriptor() because they describe
+    // the struct above, and the two must move together.
+    static const bit[64]  WB_DMA_DESC_BYTES    = 16;   // bytes per descriptor
+    static const bit[64]  WB_DMA_DESC_NEXT_OFF = 12;   // byte offset of `next`
 }

@@ -3,7 +3,25 @@
 // back, WITHOUT scoreboard checks, until a wall-clock target elapses. Counts
 // completed transfers + words so the test can report throughput. Registers are
 // re-programmed every transfer (the engine writes back TXSZ/ADRx on completion)
-// -- a realistic per-transfer driver loop.
+// -- a realistic per-transfer driver loop, and `transfer_single()` is exactly
+// that loop: configure, arm, wait.
+//
+// MIGRATED DELIBERATELY, not exempted. The operation layer is what a driver
+// would use, so a throughput number measured through it is the more honest
+// figure; and this is the only test that would notice if the layer were
+// expensive. Baseline (raw register writes), 2026-08-12:
+//
+//   TLM       5408.0 xfers/s   1.384 Mword/s
+//   SPL_XTOR   107.9 xfers/s   0.028 Mword/s
+//
+// Per-transfer bus traffic changes shape: the old loop did 5 writes plus, per
+// wake, 2 INT_SRC reads and a CH_CSR read; this one does 6 writes (configure
+// writes AM0/AM1 too) plus one CH_CSR read per wake. Fewer accesses, but the
+// channel_c/mailbox handoff and the extra process add SV-side cost that shows
+// up on the TLM view, where the number is a class-model figure rather than a
+// bus figure.
+//
+// Design: docs/uvm-op-layer-adoption.md §7.6.
 class wb_dma_perf_seq extends wb_dma_base_seq;
     `uvm_object_utils(wb_dma_perf_seq)
     int  tot  = 256;                 // words per transfer
@@ -16,19 +34,22 @@ class wb_dma_perf_seq extends wb_dma_base_seq;
     function new(string name = "wb_dma_perf_seq"); super.new(name); endfunction
 
     task body();
-        logic [31:0] v;
+        wb_dma_status_e st;
         real t0;
+
         model.mem(0).fill(SRC_BASE, tot, 16'hBEEF);   // src content (once)
-        reg_write(REG_INT_MASKA, 32'hffff_ffff);
+        dma().configure_interrupt_routing(WB_DMA_INT_A, 31'h7fff_ffff);
+
         t0 = wc_now();
         forever begin
-            reg_write(CH_TXSZ(0), mk_sz(0, tot));      // chunk=0 => single chunk
-            reg_write(CH_ADR0(0), SRC_BASE);
-            reg_write(CH_ADR1(0), DST_BASE);
-            reg_write(CH_CSR(0),  mk_csr(.ch_en(1), .src_sel(0), .dst_sel(0),
-                                         .inc_src(1), .inc_dst(1), .mode_hs(0),
-                                         .ars(0), .prio(3'd0), .ine_done(1)));
-            wait_int(REG_INT_SRCA, 32'h1, v);          // wait done + ack (clear)
+            // chunk 0 => the whole transfer is a single chunk.
+            dma().ch(0).transfer_single(st, mk_cfg(
+                .src(SRC_BASE), .dst(DST_BASE), .tot_sz(tot), .chk_sz(0)));
+            if (st != WB_DMA_DONE) begin
+                `uvm_error("PERF", $sformatf(
+                    "transfer %0d ended %s, expected WB_DMA_DONE", xfers, st.name()))
+                break;
+            end
             xfers++; words += tot;
             // Check the clock every 8 transfers (amortise the /proc read).
             if ((xfers % 8 == 0) && (wc_now() - t0) >= secs) break;

@@ -51,11 +51,35 @@ fragment:
   # When NOTHING injects (a bare `pssparser` run, or another tool) there is no
   # `target_cfg_pkg` at all, `compile has` on it is false, and the adapter
   # defaults to the richer model. No stub declaration is carried here.
+  #
+  # NOT ALL OF THE MODEL IS HERE. `wb_dma_regs_pkg` is GENERATED IN FULL from
+  # src/rdl by `reg-model-pss` and has no hand-written part: every register
+  # type, field struct and register group the components below program the
+  # device through comes from the RDL. Nothing under this tree declares that
+  # package.
+  #
+  # So it must be COMPILED FIRST, which is why the consumers below say
+  # `needs: [reg-model-pss, src]` and not `[src]`. `needs` order is compile
+  # order, and this fileset cannot express the dependency itself: it derives
+  # order from the layout of this directory, and the generated file is not in
+  # it.
+  #
+  # What did NOT move into the RDL is in `wb_dma_types_pkg.pss` -- the channel
+  # count, the MMIO window size and the descriptor-record geometry. Those are
+  # parameters of the DEVICE rather than of its register map, so a generated
+  # register package is the wrong place for them regardless of whether the
+  # exporter could emit them.
   - name: src
     uses: pss.FileSet
     with:
       root: wb_dma_c
       profile: total-topological
+      # Declared by `reg-model-pss`, not by anything under this directory. The
+      # tree imports it from a dozen files, so without this the profile's
+      # unresolved-import check -- correctly -- calls every one of them a
+      # missing file. Naming it here keeps that check live for every OTHER
+      # import, which is the alternative `strict: false` would have thrown away.
+      provided: [wb_dma_regs_pkg]
 
   # ---- The same device, without blocking primitives -----------------------------
   # The firmware-facing profile: configuration operations, the three *_start()
@@ -79,7 +103,7 @@ fragment:
   # on every run.
   - name: check-nonblocking
     uses: pssc.Check
-    needs: [src]
+    needs: [reg-model-pss, src]
     with:
       order_check: false
       # Both constants, not just the one this check is about: a provider that
@@ -99,7 +123,7 @@ fragment:
   # the day that xfail xpasses.
   - name: check
     uses: pssc.Check
-    needs: [src]
+    needs: [reg-model-pss, src]
     with:
       order_check: false
 

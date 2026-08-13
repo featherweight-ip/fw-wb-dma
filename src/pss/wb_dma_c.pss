@@ -37,9 +37,9 @@ component wb_dma_c {
     // Per-channel operations. Sized at the BUILD-TIME channel count, because
     // the register structure is static; num_ch is how many an instance
     // actually uses, and operations should be issued only to ch[0..num_ch-1].
-    wb_dma_ch_c     ch[wb_dma_regs_pkg::WB_DMA_MAX_CH];
+    wb_dma_ch_c     ch[wb_dma_types_pkg::WB_DMA_MAX_CH];
 
-    int                 num_ch   = wb_dma_regs_pkg::WB_DMA_MAX_CH;
+    int                 num_ch   = wb_dma_types_pkg::WB_DMA_MAX_CH;
 
     // Build-time pri_sel: caps the usable range of wb_dma_ch_cfg_s.prio.
     // Legal values are 1, 4 and 8; a priority above this is not an error, it
@@ -52,16 +52,22 @@ component wb_dma_c {
     //
     // Each channel gets its own handle rather than being nested in one device
     // group: that is what lets the per-channel operations access registers
-    // without indexing. The offsets come from the map constants, so the stride
-    // stays device knowledge held in one place.
+    // without indexing.
+    //
+    // The offset comes from the GENERATED group, not from a constant here.
+    // get_offset_of_instance_array() is what peakrdl-pss emits for
+    // `bank[NUM_CH] @0x20 += 0x20`, so the base and the stride are stated once,
+    // in src/rdl/wb_dma.rdl, and this loop cannot disagree with the register
+    // model it is binding. Note it returns -1 for an unknown instance name, so
+    // "bank" is load-bearing: rename that instance in the RDL and every channel
+    // binds to a wild address rather than failing here.
     solve function void initialize(addr_handle_t base) {
         regs.set_handle(base);
 
         foreach (ch[i]) {
             ch[i].initialize(i,
                 make_handle_from_handle(base,
-                    wb_dma_regs_pkg::WB_DMA_CH_BASE +
-                    i * wb_dma_regs_pkg::WB_DMA_CH_STRIDE));
+                    regs.get_offset_of_instance_array("bank", i)));
         }
     }
 }

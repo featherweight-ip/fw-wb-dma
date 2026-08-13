@@ -151,10 +151,11 @@ typo is a compile error, not a wrong register bit.
 
 ```
 src/pss/                    THE DEVICE
-  wb_dma_types_pkg.pss      shared data types: enums, channel config, descriptor
-  wb_dma_regs_pkg/
-    wb_dma_regs_c.pss       address map + engine-global bank
-    wb_dma_ch_regs_c.pss    one channel's bank
+  wb_dma_types_pkg.pss      shared declarations: the device parameters (channel
+                            count, MMIO span, descriptor geometry), the enums,
+                            the channel config and the descriptor struct
+  (wb_dma_regs_pkg)         NOT IN THIS TREE -- the register model is generated
+                            in full from src/rdl by the `reg-model-pss` task
   wb_dma_c(.pss|/)          MMIO model: engine-global operations, owner of the
                             per-channel operation components
   wb_dma_ch_c(.pss|/)       MMIO model: everything per-channel

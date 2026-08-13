@@ -2,18 +2,25 @@
 // spanning 0x20 bytes (docs/dma_doc.md §4.4).
 //
 // Cross-checked against the executable SPL model (src/spl/wb_dma_ch.svh,
-// src/spl/wb_dma_rf.svh) and the PSS register model
-// (src/pss/wb_dma_regs_pkg/wb_dma_ch_regs_c.pss). Where the OpenCores
-// datasheet and the implemented model disagree, the model wins and the
-// divergence is recorded in the field's `desc`.
+// src/spl/wb_dma_rf.svh). Where the OpenCores datasheet and the implemented
+// model disagree, the model wins and the divergence is recorded in the field's
+// `desc`.
 //
-// NAMING IS LOAD-BEARING. Every register type is a NAMED type at root scope
-// and every instance carries the name the SPL model already uses, because
-// peakrdl-fw-hdl derives the emitted SystemVerilog identifiers from them:
-// a root-scope `reg wb_dma_csr` becomes `wb_dma_csr_t`, and the instance name
-// becomes the `fw_reg` member name. Renaming anything here renames generated
-// code that src/spl compiles against. For the same reason there are no
-// per-instance property overrides (`inst->name = ...`): a dynamic assignment
+// This file feeds TWO projections -- peakrdl-fw-hdl for src/spl and
+// peakrdl-pss for src/pss -- so a change here reaches the SystemVerilog model
+// and the operation model together. That is the point: the PSS register
+// package used to be a hand-written peer of this file, and a peer can drift.
+//
+// NAMING IS LOAD-BEARING, now in two languages. Every register type is a NAMED
+// type at root scope and every instance carries the name the models already
+// use, because both exporters derive their identifiers from them: a root-scope
+// `reg wb_dma_csr` becomes `wb_dma_csr_t` in SystemVerilog and `wb_dma_csr_s`
+// in PSS, and the instance name becomes the member name in both. Renaming
+// anything here renames generated code that src/spl and src/pss compile
+// against -- and a type name must not collide with a hand-written type in a
+// package the PSS side imports alongside it (see `wb_dma_descptr` below). For
+// the same reason there are no per-instance property overrides
+// (`inst->name = ...`): a dynamic assignment
 // makes the instance a distinct lexical type, and the exporter then mangles a
 // hash into the struct name.
 
@@ -237,7 +244,13 @@ reg wb_dma_amask {
     field { sw = rw; hw = r; } mask[31:0] = 32'hffff_fffc;
 };
 
-reg wb_dma_desc {
+// The type is `descptr`, not `desc`, because this register holds the ADDRESS of
+// a descriptor, not a descriptor. The PSS projection emits one struct per
+// register type into wb_dma_regs_pkg, and the operation model already has a
+// `wb_dma_desc_s` -- the 16-byte descriptor RECORD itself, in
+// src/pss/wb_dma_types_pkg.pss. Two different things cannot both be
+// `wb_dma_desc_s` in scopes a function imports together.
+reg wb_dma_descptr {
     name = "Linked List Descriptor Pointer";
     desc = "Address of the external descriptor. Hardware overwrites this register
             with the descriptor's NEXT pointer once the descriptor has been
@@ -283,6 +296,6 @@ regfile wb_dma_ch_regs {
     wb_dma_amask am0   @0x0c;
     wb_dma_addr  adr1  @0x10;
     wb_dma_amask am1   @0x14;
-    wb_dma_desc  desc  @0x18;
+    wb_dma_descptr desc @0x18;
     wb_dma_swptr swptr @0x1c;
 };

@@ -28,18 +28,21 @@ virtual class wb_dma_model_base extends fw_component
     pure virtual function wb_dma_mem_if_t rf_if();
     // Data memory backdoor (both flavours own s0/s1).
     function wb_dma_mem mem(bit sel); return sel ? s1 : s0; endfunction
-    // Bus-observed interrupt hook: called by the reg driver after each INT_SRC
-    // read. Default no-op (TLM fills irqc from the engine's irq callback); the
-    // WB flavour overrides it to record done order/count from the read data.
-    virtual function void note_int_src(bit bank, logic [31:0] data); endfunction
-
-    // Bus-observed CHANNEL-STATUS hook: called by the ISR after it reads a
-    // channel's CSR to clear the interrupt (the CSR carries the err/done STATUS
-    // bits INT_SRC lacks). The signal flavours override this to classify the
-    // completion cause -- INT_SRC is cause-blind (error and done set the same
-    // channel bit), so cause must be reconstructed from the CSR. Default no-op
-    // (the TLM model fills irqc from the engine's cause seam directly).
+    // Bus-observed CHANNEL-STATUS hook. Called by wb_dma_pss_mem_adapter when
+    // the operation layer reads a channel's CSR -- which is the read that also
+    // clears the interrupt. The signal flavours override it to classify the
+    // completion cause; the TLM model fills irqc from the engine's cause seam
+    // directly and leaves this a no-op.
+    //
+    // The adapter EDGE-DETECTS before calling this: the CSR reports done/err as
+    // a LEVEL that holds until the channel is re-armed, and the operation layer
+    // reads that register several times per transfer. See the adapter.
+    //
     //   csr bit 12 = err (status: errored), bit 11 = done (status: complete)
+    //
+    // Its INT_SRC counterpart, note_int_src(), is gone with the INT_SRC polling
+    // it existed for: the operation layer never reads INT_SRC, and no flavour
+    // ever overrode the hook.
     virtual function void note_ch_status(int c, logic [31:0] csr); endfunction
 
     // --- interrupt-change seam ---

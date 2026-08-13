@@ -28,7 +28,7 @@ extend component wb_dma_c {
     target function void configure_interrupt_routing(
             wb_dma_int_bank_e bank,
             bit[31]           channel_mask) {
-        wb_dma_intvec_s vec;
+        wb_dma_intmsk_s vec;
 
         vec.ch = channel_mask;
 

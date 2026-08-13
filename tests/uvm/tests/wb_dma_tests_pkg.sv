@@ -25,10 +25,14 @@ package wb_dma_tests_pkg;
     `include "wb_dma_hw_hs_seq.svh"
     `include "wb_dma_hol_seq.svh"
     `include "wb_dma_perf_seq.svh"
+    `include "wb_dma_pause_arm_seq.svh"
 
-    // base test + scenario tests
+    // base test + scenario tests. The name-check visitor precedes the base
+    // test, which installs it.
+    `include "wb_dma_name_check.svh"
     `include "wb_dma_base_test.svh"
     `include "wb_dma_sw_copy_test.svh"
+    `include "wb_dma_pause_arm_test.svh"
     `include "wb_dma_arb_test.svh"
     `include "wb_dma_arb_eq_test.svh"
     `include "wb_dma_err_test.svh"

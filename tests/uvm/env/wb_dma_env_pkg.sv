@@ -41,6 +41,20 @@ package wb_dma_env_pkg;
     import wb_dma_spl_pkg::*;       // wb_dma engine + wb_dma_csr_t / _sz_t
     import fwvip_wb_pkg::*;         // fwvip_wb initiator/target/monitor agents
     import fwvip_gpio_pkg::*;       // fwvip_gpio_monitor + fwvip_gpio_transaction
+    // The operation model generated from src/pss by `pss.op-model-sv`:
+    // wb_dma_c / wb_dma_ch_c_if, the wb_dma_ch_cfg_s config struct and
+    // wb_dma_status_e, plus addr_handle_t and the reg_c runtime they build on.
+    // No name collides with wb_dma_reg_pkg (imported via wb_dma_spl_pkg): the
+    // two projections of src/rdl suffix their value types differently -- `_t`
+    // from peakrdl-fw-hdl, `_s` from peakrdl-pss.
+    import pssc_reg_pkg::*;
+    import wb_dma_c_pkg::*;
+    // Re-exported, following the same convention wb_dma_spl_pkg uses for the
+    // register model: the scenario sequences in wb_dma_tests_pkg name
+    // wb_dma_status_e and the WB_DMA_* enum items, and a wildcard import does
+    // not make an imported name visible to the importer's own importers.
+    export pssc_reg_pkg::*;
+    export wb_dma_c_pkg::*;
 
     // -----------------------------------------------------------------------
     // Shared module-level declarations, visible to every include below.
@@ -65,38 +79,21 @@ package wb_dma_env_pkg;
         return up;
     endfunction
 
-    // ---- register map (cf. packages/wb_dma/rtl wb_dma_defines.v) --------------
-    localparam logic [31:0] REG_COR      = 32'h00;   // global CSR (bit0 = PAUSE)
-    localparam logic [31:0] REG_INT_MASKA = 32'h04;
-    localparam logic [31:0] REG_INT_MASKB = 32'h08;
-    localparam logic [31:0] REG_INT_SRCA  = 32'h0c;  // read-only snapshot (clear via CH_CSR read)
-    localparam logic [31:0] REG_INT_SRCB  = 32'h10;
-
-    function automatic logic [31:0] CH_CSR (int c); return 32'h20 + 32'h20*c; endfunction
-    function automatic logic [31:0] CH_TXSZ(int c); return 32'h24 + 32'h20*c; endfunction
-    function automatic logic [31:0] CH_ADR0(int c); return 32'h28 + 32'h20*c; endfunction
-    function automatic logic [31:0] CH_AM0 (int c); return 32'h2c + 32'h20*c; endfunction
-    function automatic logic [31:0] CH_ADR1(int c); return 32'h30 + 32'h20*c; endfunction
-    function automatic logic [31:0] CH_AM1 (int c); return 32'h34 + 32'h20*c; endfunction
-
-    // Build a channel CSR word (bit positions match the RTL/spec).
-    function automatic logic [31:0] mk_csr(bit ch_en, bit src_sel, bit dst_sel,
-                                           bit inc_src, bit inc_dst, bit mode_hs,
-                                           bit ars, logic [2:0] prio,
-                                           bit ine_done = 1, bit ine_chunk = 0,
-                                           bit ine_err = 0);
-        logic [31:0] v = '0;
-        v[0]  = ch_en;   v[1]  = dst_sel; v[2]  = src_sel;
-        v[3]  = inc_dst; v[4]  = inc_src; v[5]  = mode_hs; v[6] = ars;
-        v[15:13] = prio;
-        v[17] = ine_err; v[18] = ine_done; v[19] = ine_chunk;
-        return v;
-    endfunction
-
-    // SZ word: chunk in [24:16] (9b), tot in [11:0] (12b).
-    function automatic logic [31:0] mk_sz(int chunk, int tot);
-        return ((chunk & 32'h0000_01ff) << 16) | (tot & 32'h0000_0fff);
-    endfunction
+    // The hand-written register map that used to sit here -- REG_COR,
+    // REG_INT_MASK{A,B}, REG_INT_SRC{A,B}, the CH_*(c) offset functions, and
+    // mk_csr()/mk_sz() -- is GONE. It was a fourth statement of a map that
+    // src/rdl already owns, sourced from the RTL's defines rather than from the
+    // RDL, and nothing kept it honest: moving a field would have left these
+    // programming the old layout while both generated projections followed.
+    //
+    // Stimulus now goes through the operation model generated from src/pss
+    // (imported above), so the map reaches the tests as generated code. The one
+    // place the testbench still needs to KNOW an address -- deciding whether a
+    // read was a channel CSR, for completion accounting -- derives it from the
+    // generated register group instead of restating it; see
+    // wb_dma_pss_mem_adapter's constructor.
+    //
+    // docs/uvm-op-layer-adoption.md §1, §5, §6.3.
 
     // ---- model: fw-hdl class "DUT" (no UVM dependency in these classes) -------
     `include "wb_dma_mem.svh"
@@ -116,6 +113,10 @@ package wb_dma_env_pkg;
     `include "wb_dma_comparator.svh"
     `include "wb_dma_mon_adapter.svh"
     `include "wb_dma_reg_forward.svh"
+    // Before the env (which builds one) and before the base sequence (which
+    // binds itself to one). It forward-declares wb_dma_base_seq, since the
+    // dependency is mutual.
+    `include "wb_dma_pss_mem_adapter.svh"
     `include "wb_dma_env.svh"
     `include "wb_dma_base_seq.svh"
 

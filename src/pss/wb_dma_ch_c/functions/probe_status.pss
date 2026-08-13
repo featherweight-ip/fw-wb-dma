@@ -35,7 +35,7 @@ import wb_dma_types_pkg::*;
 extend component wb_dma_ch_c {
 
     target function wb_dma_status_e probe_status() {
-        wb_dma_ch_csr_s csr;
+        wb_dma_csr_s csr;
 
         csr = regs.csr.read();
 

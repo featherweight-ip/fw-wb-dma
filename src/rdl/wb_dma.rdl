@@ -14,14 +14,19 @@
 //   0x20  bank[0] ... stride 0x20, NUM_CH banks
 //
 // NUM_CH is the build-time channel count (RTL `ch_count`); it sizes the static
-// register structure. The default of 4 matches WB_DMA_MAX_CH in
-// src/pss/wb_dma_regs_pkg/wb_dma_regs_c.pss. The datasheet allows up to 31.
+// register structure. It is a parameter of the DEVICE, so it is stated in three
+// places that must agree: here, in the `-P NUM_CH` passed to both exports in
+// src/rdl/flow.yaml, and as WB_DMA_MAX_CH in src/pss/wb_dma_types_pkg.pss.
+// The datasheet allows up to 31.
 //
 // See the naming note in wb_dma_ch_regs.rdl: the type and instance names here
-// are the identifiers peakrdl-fw-hdl emits, chosen to match the hand-written
-// model in src/spl.
-
-`include "wb_dma_ch_regs.rdl"
+// are the identifiers peakrdl-fw-hdl and peakrdl-pss emit, chosen to match the
+// models in src/spl and src/pss.
+//
+// wb_dma_ch_regs.rdl is NOT `included: it is a separate file in the task's file
+// list (src/rdl/flow.yaml), compiled ahead of this one. That is what makes it a
+// tracked input rather than something the preprocessor pulls in behind the
+// build's back.
 
 // ---------------------------------------------------------------------------
 // CSR -- main configuration/status register (0x00, §4.1 Table 3)

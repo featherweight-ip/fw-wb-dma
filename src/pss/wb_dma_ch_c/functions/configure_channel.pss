@@ -19,8 +19,8 @@ import wb_dma_types_pkg::*;
 extend component wb_dma_ch_c {
 
     target function void configure_channel(wb_dma_ch_cfg_s cfg) {
-        wb_dma_ch_sz_s   sz;
-        wb_dma_ch_csr_s  csr;
+        wb_dma_sz_s   sz;
+        wb_dma_csr_s  csr;
 
         regs.adr0.write_val(cfg.src);
         regs.am0.write_val(cfg.src_mask);

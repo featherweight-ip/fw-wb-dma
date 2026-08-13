@@ -68,7 +68,7 @@ class wb_dma_de extends fw_component implements fw_runnable;
 
         // de.irq is an OPTIONAL cause seam (like the hs[] ports): resolve it only
         // when a scoreboard is connected; raise() null-guards it. The interrupt
-        // LEVELS do not depend on it -- they flow through rf.raise_int below.
+        // LEVELS do not depend on it -- they flow through rf.signal_int below.
         wb_dma_irq_if  irqif = irq.is_connected() ? irq.get_if() : null;
 
         // Collect the heterogeneous wait list -- every CSR plus every connected HS
@@ -340,7 +340,9 @@ class wb_dma_de extends fw_component implements fw_runnable;
 
         n = (sz.chk_sz == 0) ? ch.w_rem : min2(int'(sz.chk_sz), ch.w_rem);
         planned = n;
-        ch.set_busy(1'b1);
+        // BUSY is not re-asserted here: arm() set it, ready() required it to get
+        // this far, and nothing clears it between chunks (the ARS reload keeps
+        // it set). Writing it every chunk only added a masked register write.
 
         // The engine NEVER advances time itself -- it is a pure data mover. All
         // timing emerges from data-availability delays on the master access()
@@ -518,15 +520,18 @@ class wb_dma_de extends fw_component implements fw_runnable;
         // in rf because this is the only place the cause is known -- rf sees a
         // channel index and nothing else. It is the head of the interrupt
         // chain, and the chain is only readable end to end if every link says
-        // what it knows: cause here, source latch in rf.int_pending_set, level
-        // move in rf.int_level.
+        // what it knows: cause here, source latch in the CSR's own state-change
+        // event (and the aggregate in rf.int_pending_set), level move in
+        // rf.int_level.
         `fw_ev_state(dbg_if(), FW_L_TXN, "de.raise_int")
             `fw_subject(c)
             `fw_field_u8_as("ch", c)
             `fw_field_u8_as("cause", int'(cause))     // 0 chunk, 1 done, 2 err
             `fw_state_change(0, longint'(cause), FW_ACTOR_HW, 0)
         `fw_ev_end
-        rf.raise_int(c);                                 // moves the level (rf int seam)
+        // The source is already latched -- set_int_*() above wrote the CSR bit,
+        // which IS the pending source. This only republishes the level.
+        rf.signal_int();                                 // moves the level (rf int seam)
         if (irqif != null)                               // publish the cause (optional sink)
             irqif.raise('{channel: c[4:0], cause: cause});
     endtask
@@ -535,11 +540,11 @@ class wb_dma_de extends fw_component implements fw_runnable;
     // the enabled software pointer. Approximate: compare the IF0-side working
     // address (whichever of src/dst targets IF0) to the pointer.
     local function bit swptr_stall(wb_dma_ch ch);
-        bit [31:0]   ptr, a0;
-        bit [31:0]   sp  = ch.regs.swptr.read();
-        wb_dma_csr_t csr = ch.regs.csr.read();
-        if (!sp[31]) return 1'b0;                        // SWPTR_EN
-        ptr = sp & 32'h7fff_fffc;
+        bit [31:0]     ptr, a0;
+        wb_dma_swptr_t sp  = ch.regs.swptr.read();       // .en / .ptr from the RDL
+        wb_dma_csr_t   csr = ch.regs.csr.read();
+        if (!sp.en) return 1'b0;
+        ptr = {1'b0, sp.ptr} & 32'hffff_fffc;            // word-align
         if (csr.src_sel == 1'b0)      a0 = ch.w_src;
         else if (csr.dst_sel == 1'b0) a0 = ch.w_dst;
         else                          return 1'b0;       // neither side on IF0

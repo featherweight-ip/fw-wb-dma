@@ -34,12 +34,10 @@ package wb_dma_spl_pkg;
     import fw_proto_gpio_pkg::*;    // gpio_drive_if (interrupt-level output API only;
     export fw_proto_gpio_pkg::*;    // the transactor bridges ride along unused -- the
                                     // GPIO xtor is instanced only at the wb_dma_spl edge)
-    // The REGISTER MODEL, generated from src/rdl/*.rdl by peakrdl-fw-hdl (dv-flow
-    // task `reg-model`): the packed field structs (wb_dma_csr_t, wb_dma_sz_t,
-    // wb_dma_gcsr_t, wb_dma_intmsk_t, wb_dma_intsrc_t, wb_dma_swptr_t) and the
-    // two fw_reg_block classes (wb_dma_ch_regs, wb_dma_regs). Re-exported so a
-    // consumer that imports wb_dma_spl_pkg sees the register types too, exactly
-    // as when they were declared here.
+    // The REGISTER MODEL -- the MMIO field structs and the two fw_reg_block
+    // classes -- generated from src/rdl/*.rdl by peakrdl-fw-hdl (dv-flow task
+    // `reg-model`). Re-exported so a consumer that imports wb_dma_spl_pkg sees
+    // the register types too.
     import wb_dma_reg_pkg::*;
     export wb_dma_reg_pkg::*;
 
@@ -52,11 +50,6 @@ package wb_dma_spl_pkg;
         bit [4:0]      channel;
         wb_dma_cause_e cause;
     } wb_dma_irq_evt_t;
-
-    // The MMIO field layouts (wb_dma_csr_t, wb_dma_sz_t, wb_dma_gcsr_t,
-    // wb_dma_intmsk_t / wb_dma_intsrc_t, wb_dma_swptr_t) used to be declared
-    // here. They now come from wb_dma_reg_pkg, generated from src/rdl -- the
-    // bit positions are stated once, in SystemRDL, and nothing restates them.
 
     // ---- DMA-specific APIs (each ships a `FW_WB_DMA_*_IMP macro) -------------
     `include "wb_dma_hs_if.svh"

@@ -12,14 +12,9 @@
 // class (no process, no ports): the register file owns an array of these and the
 // engine mutates their working state.
 
-// The per-channel register bank class -- `wb_dma_ch_regs`, an fw_reg_block of
-// eight 32-bit registers at stride 4 (0x00..0x1c, 0x20 byte span) -- is
-// GENERATED from src/rdl/wb_dma_ch_regs.rdl into wb_dma_reg_pkg (dv-flow task
-// `reg-model`). So are the three masks that capture its access contract:
-//   sw_wmask  -- bits the host may write (RW config + the WO STOP pulse + CH_EN)
-//   hw_wmask  -- bits the engine drives (status + ROC int-source, plus CH_EN and
-//                STOP which hardware auto-clears on done/err and on abort)
-//   rclr_mask -- int-source bits cleared as a side effect of a host CSR read
+// The per-channel register bank class `wb_dma_ch_regs`, its field layouts and
+// its three access masks (sw_wmask / hw_wmask / rclr_mask) are GENERATED from
+// src/rdl/wb_dma_ch_regs.rdl into wb_dma_reg_pkg (dv-flow task `reg-model`).
 // Change a bit position or an access rule in the RDL, not here.
 
 class wb_dma_ch;
@@ -29,13 +24,9 @@ class wb_dma_ch;
     // capability is absent the corresponding control bit is ignored (spec App. A).
     bit cap_en, cap_ars, cap_ed, cap_cbuf;
 
-    // A VIEW of this channel's MMIO register bank.
-    //
-    // Not owned. The bank belongs to the register MAP (`wb_dma_regs`), which
-    // creates it and places it at 0x20 + id*0x20; this is a handle to that
-    // region. The channel used to construct it and donate it upward, which made
-    // creation run opposite to containment and left "who owns this bank"
-    // genuinely ambiguous -- the channel by construction, the map by address.
+    // A VIEW of this channel's MMIO register bank -- not owned. The bank belongs
+    // to the register MAP (`wb_dma_regs`), which creates it and places it in the
+    // address space; this is a handle to that region.
     //
     // Ownership is singular, views are plural: the engine, the register file and
     // the UVM reference model all reach these same registers, and none of them

@@ -49,7 +49,7 @@ component pss_top {
     // The handshake operation model: one per handshake-capable channel. The
     // participant is the peripheral device, so in a real system these would be
     // owned by the requesting IP's model rather than sitting alongside the DMA.
-    wb_dma_hs_c                 hs[wb_dma_regs_pkg::WB_DMA_MAX_CH];
+    wb_dma_hs_c                 hs[wb_dma_types_pkg::WB_DMA_MAX_CH];
 
     // init_down, not init_up, and the ordering is load-bearing: a child's
     // init_up runs BEFORE its parent's, so anything a child needs during its
@@ -60,7 +60,7 @@ component pss_top {
         addr_handle_t                h;
 
         mmio.addr = WB_DMA_BASE_ADDR;
-        mmio.size = wb_dma_regs_pkg::WB_DMA_REG_SPAN;
+        mmio.size = wb_dma_types_pkg::WB_DMA_REG_SPAN;
         h = sys_mem.add_nonallocatable_region(mmio);
 
         // Binds the global bank and every channel bank in one call.

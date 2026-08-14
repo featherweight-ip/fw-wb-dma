@@ -1,89 +1,14 @@
-// notify_irq -- NOT an operation. It is the environment's entry point into the
-// model: the one thing here the system does not initiate.
-//
-// Every other function in this tree is called by a PSS action. This one is
-// called by the testbench -- a UVM interrupt monitor, a cocotb coroutine, an
-// ISR in firmware -- when it observes the DMA's aggregate interrupt output
-// assert. NOTHING IN PSS CALLS IT, and that is the point of the design.
-//
-// WHY NOT A PSS ACTION. The obvious alternative is an interrupt-service action
-// looping on an imported blocking wait_irq(). It works, and it costs: the
-// action never retires, so every scenario containing an end-to-end operation
-// must compose it in `parallel`, and must never wait on it -- the same hazard
-// transfer_single.pss documents for auto_restart, imposed on every test in the
-// suite. Leaving the notification outside PSS entirely removes it. The channel
-// becomes pure runtime plumbing with no scenario semantics, which is the
-// condition under which target-time synchronisation is safe to use at all: the
-// solver knows nothing about it, and needs to know nothing about it.
-//
-// TWO CONSEQUENCES OF AN ASYNCHRONOUS FOREIGN CALLER
-//
-//   1. try_put(), never put(). The caller runs on a simulator thread, outside
-//      any executor context. put() blocks when the channel is full, which here
-//      would stall the interrupt monitor on a channel nobody is draining.
-//      try_put() cannot block, and its cross-executor thread-safety guarantee
-//      (§21.9.1) is what makes an asynchronous foreign caller legal at all.
-//
-//   2. Check your tool emits this. No PSS code references it, so a front end
-//      that prunes unreferenced target functions will drop it, and the failure
-//      shows up as an unresolved symbol at testbench link time rather than
-//      anywhere visible in the model.
-//
-// WHY IT POSTS TO EVERY CHANNEL, BLIND
-//
-// A dispatcher that read INT_SRC_A/B to wake only the channels that actually
-// raised the interrupt would consume the very state the waiters need: the
-// source bits are read-to-clear, and INT_SRC is ANDed with the routing mask,
-// so an unrouted channel would never be woken (wait_completion.pss §3.1.1).
-// Reading the event in order to route the event is a defect waiting to happen.
-// Wake everyone; each thread reads its own CSR and decides for itself.
-//
-// The cost is bounded by wake's DEPTH of 1: a channel with no waiter keeps at
-// most one stale token, worth one extra register read at the top of its next
-// operation. That bound is what makes blind posting cheaper than tracking who
-// is waiting -- and tracking is not available anyway, since PSS has no mutable
-// component attribute to track it in.
-//
-// try_put() returning false is the NORMAL case, not an error: it means a wake
-// is already pending on that channel, which is precisely the coalescing this
-// depth was chosen for. The result is discarded on purpose.
-//
-// If the 31-way post ever shows up as noise, the fix is per-bank channels
-// matching INT_A/INT_B -- not waiter tracking.
-//
-// GATED BY compile if, NOT BY compile assert -- and that is a deliberate
-// reversal of what the layering rule would suggest.
-//
-// The rule elsewhere is that a file whose PRESENCE is a request for blocking
-// support asserts rather than vanishes, so the failure is loud. This file
-// qualifies: it exists only to feed `wake`, which only the blocking layer has.
-// But it is part of THE DEVICE, and `pss.FileSet` selects the device tree
-// wholesale from the layout -- so an assert here would not report a mistake, it
-// would make the non-blocking profile impossible to build at all.
-//
-// So the loud failure moves to where the mistake can actually be made: the
-// scenario layer, which is separately selected and whose presence really is a
-// request for blocking (tests/pss/pss_top.pss).
-//
-// THIS DOES COST SOMETHING, and it is worth stating. This function already had
-// one way to disappear silently -- no PSS code references it, so a front end
-// that prunes unreferenced target functions will drop it, and the failure
-// surfaces as an unresolved symbol at testbench link time. It now has two. If
-// you are staring at an unresolved `notify_irq` from the SystemVerilog side,
-// check WHICH PROFILE THE MODEL WAS BUILT WITH before you go looking at
-// pruning.
-import sync_pkg::*;
+// notify_irq -- Environment event notification
+// Only called from outside
 import wb_dma_cfg_pkg::*;
 
 extend component wb_dma_c {
 
-    compile if (wb_dma_cfg_pkg::HAS_BLOCKING) {
+    compile if (wb_dma_cfg_pkg::HAS_EVENT_WAIT) {
 
         target function void notify_irq() {
-            bool posted;
-
             foreach (ch[i]) {
-                posted = ch[i].wake.try_put(1);
+                ch[i].wake.try_put(1);
             }
         }
 

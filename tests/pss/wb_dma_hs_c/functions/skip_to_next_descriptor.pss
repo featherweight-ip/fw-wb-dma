@@ -1,35 +1,33 @@
-// skip_to_next_descriptor -- operation model §4, level: end-to-end.
-//
-// completes_when: the nd qualifier has been delivered with the required
-//                 timing -- asserted and held at least two cycles ahead of the
-//                 next request. The device's internal descriptor advance is
-//                 NOT part of this operation's completion; it is observed
-//                 downstream, in the next request_chunk() and, with SZ_WB set,
-//                 via read_descriptor_residual().
-// waits for:      cycles. Never a driver state -- dma_nd_i is pin-only, with
-//                 no register bit anywhere in §4, so software cannot invoke
-//                 this at all.
-//
-// Parameterless, and therefore suspicious under the usual granularity test. It
-// survives because the TIMING is the operation: nd must lead req by at least
-// two cycles, and no consumer can express that as an argument to
-// request_chunk().
-//
-// The same reasoning settles what looked like a weak completion contract: this
-// operation is not software-reachable, so nothing in software ever waits on
-// it. Scoping completion to qualifier delivery is both implementable and
-// sufficient. Had it been software-reachable it would have needed the
-// ARS treatment -- a concurrent operation supplying the terminating event.
-//
-// nd is left ASSERTED on return. The following request_chunk(0) carries it
-// into the request and clears it after the ack.
-//
-// The EOL case -- list ended, channel stops, CH_EN cleared -- surfaces on the
-// following request_chunk(), not here.
 import wb_dma_hs_pkg::*;
 
 extend component wb_dma_hs_c {
 
+    // Deliver the next-descriptor qualifier ahead of the next chunk request.
+    //
+    // *§4, end-to-end.* Completes when the nd qualifier has been delivered with
+    // the required timing -- asserted and held at least two cycles ahead of the
+    // next request. The device's internal descriptor advance is NOT part of this
+    // operation's completion; it is observed downstream, in the next
+    // ``request_chunk()`` and, with SZ_WB set, via
+    // ``read_descriptor_residual()``. It waits for cycles, never for a driver
+    // state.
+    //
+    // Parameterless, and therefore suspicious under the usual granularity test.
+    // It survives because THE TIMING IS THE OPERATION: nd must lead req by at
+    // least two cycles, and no consumer can express that as an argument to
+    // ``request_chunk()``.
+    //
+    // The same reasoning settles what looks like a weak completion contract:
+    // this operation is not software-reachable, so nothing in software ever
+    // waits on it, and scoping completion to qualifier delivery is both
+    // implementable and sufficient. Had it been software-reachable it would have
+    // needed the ARS treatment -- a concurrent operation supplying the
+    // terminating event.
+    //
+    // **nd is left ASSERTED on return.** The following ``request_chunk(0)``
+    // carries it into the request and clears it after the ack. The EOL case --
+    // list ended, channel stops, CH_EN cleared -- surfaces on that following
+    // request, not here.
     target function void skip_to_next_descriptor() {
         wb_dma_hs_drive_nd(chan, 1);
         wb_dma_hs_delay_cycles(nd_lead_cycles);

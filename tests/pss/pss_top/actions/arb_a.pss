@@ -1,21 +1,24 @@
-// wb_dma_arb_seq, rewritten as operation calls (operation model §5.2).
-//
-//     parallel foreach c:
-//         mmio.transfer_single(c, cfg{prio: prio[c], ...})
-//     # completion ORDER is the property under test; each call returns as its
-//     # channel ends
-//
-// Multi-channel activity is parallel composition, full stop. Nothing in the
-// operation model changes with channel count -- which is why round 1's
-// conclusion that arbitration scenarios needed a split operation was wrong.
-//
-// The channels are not pinned here. Which instance each transfer lands on is
-// the solver's choice, constrained only by the priorities; a directed version
-// would add comp constraints.
 import wb_dma_types_pkg::*;
 
 extend component pss_top {
 
+    // Four concurrent transfers at distinct priorities, to exercise arbitration.
+    //
+    // ``wb_dma_arb_seq`` from §5.2, rewritten as operation calls::
+    //
+    //     parallel foreach c:
+    //         transfer_single(c, cfg{prio: prio[c], ...})
+    //
+    // Completion ORDER is the property under test; each call returns as its own
+    // channel ends.
+    //
+    // Multi-channel activity is parallel composition, full stop. Nothing in the
+    // operation model changes with channel count -- which is why an earlier
+    // conclusion that arbitration scenarios needed a split operation was wrong.
+    //
+    // The channels are not pinned here: which instance each transfer lands on is
+    // the solver's choice, constrained only by the priorities. A directed
+    // version would add ``comp`` constraints.
     action arb_a {
         wb_dma_c::configure_interrupt_routing_a  route;
         wb_dma_ch_c::transfer_single_a           xfer_a;

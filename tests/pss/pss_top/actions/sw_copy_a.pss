@@ -1,16 +1,18 @@
-// wb_dma_sw_copy_seq, rewritten as operation calls (operation model §5.2).
-//
-//     mmio.configure_interrupt_routing(bank, ALL)
-//     <test writer: fill SRC_BASE via write32>        # not an operation
-//     mmio.transfer_single(0, cfg{mode: SOFTWARE, int_on: {DONE}})
-//
-// Note what is NOT here: the source-buffer fill. That is a plain memory access
-// on the test writer's own path, and across the six sequences in §5.2 it is
-// the only line that is not an operation call.
 import wb_dma_types_pkg::*;
 
 extend component pss_top {
 
+    // A plain software-mode memory-to-memory copy on one channel.
+    //
+    // ``wb_dma_sw_copy_seq`` from §5.2, rewritten as operation calls::
+    //
+    //     configure_interrupt_routing(bank, ALL)
+    //     <test writer: fill SRC_BASE via write32>     # not an operation
+    //     transfer_single(cfg{mode: SOFTWARE, int_on: {DONE}})
+    //
+    // Note what is NOT here: the source-buffer fill. That is a plain memory
+    // access on the test writer's own path, and across the six sequences in §5.2
+    // it is the only line that is not an operation call.
     action sw_copy_a {
         wb_dma_c::configure_interrupt_routing_a  route;
         wb_dma_ch_c::transfer_single_a           xfer;

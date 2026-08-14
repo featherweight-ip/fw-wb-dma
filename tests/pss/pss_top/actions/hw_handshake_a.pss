@@ -1,25 +1,28 @@
-// wb_dma_hw_hs_seq, rewritten as operation calls (operation model §5.2).
-//
-//     mmio.configure_interrupt_routing(A, ALL)
-//     parallel {
-//         mmio.transfer_single(0, cfg{mode: HW_HANDSHAKE, ...})   # blocks to DONE
-//         repeat (ceil(tot/chunk)) hs[0].request_chunk()          # feeds it
-//     }
-//
-// This is the shape the blocking rule forces and the whole reason it is worth
-// having: a HW_HANDSHAKE transfer cannot complete on its own, so the scenario
-// is inherently a PARALLEL COMPOSITION of one MMIO operation and N handshake
-// operations. The concurrency was never a property of the operation -- round 1
-// split transfer_single into arm-and-wait halves to express exactly this, and
-// that was pushing a scheduling concern into an interface contract.
 import wb_dma_types_pkg::*;
 
 extend component pss_top {
 
+    // A hardware-handshake transfer, fed chunk by chunk by the peripheral model.
+    //
+    // ``wb_dma_hw_hs_seq`` from §5.2, rewritten as operation calls::
+    //
+    //     configure_interrupt_routing(A, ALL)
+    //     parallel {
+    //         transfer_single(cfg{mode: HW_HANDSHAKE, ...})   # blocks to DONE
+    //         repeat (ceil(tot/chunk)) request_chunk()        # feeds it
+    //     }
+    //
+    // This is the shape the blocking rule forces, and the whole reason it is
+    // worth having: a HW_HANDSHAKE transfer cannot complete on its own, so the
+    // scenario is inherently a PARALLEL COMPOSITION of one MMIO operation and N
+    // handshake operations. The concurrency was never a property of the
+    // operation -- an earlier pass split ``transfer_single`` into arm-and-wait
+    // halves to express exactly this, and that was pushing a scheduling concern
+    // into an interface contract.
     action hw_handshake_a {
         wb_dma_c::configure_interrupt_routing_a  route;
         wb_dma_ch_c::transfer_single_a           xfer;
-        wb_dma_hs_c::request_chunk_a                 feed;
+        wb_dma_hs_c::request_chunk_a             feed;
 
         rand int  n_chunks;
 

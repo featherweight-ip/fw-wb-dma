@@ -21,7 +21,7 @@ pss-order . --include 'src/pss/**/*.pss' --include 'tests/pss/**/*.pss' \
 ```
 
 No `--exclude`, and no profile to select. Nothing injects `target_cfg_pkg` on a
-bare `pss-order`/`pssparser` command line, so `wb_dma_cfg_pkg::HAS_BLOCKING`
+bare `pss-order`/`pssparser` command line, so `wb_dma_cfg_pkg::HAS_EVENT_WAIT`
 takes its default of true -- which is what every scenario here requires (see the
 `compile assert` in `pss_top.pss`). The convention is
 `docs/target-cfg-contract.md`.

@@ -157,3 +157,4 @@ package:
   - src/rtl/flow.yaml
   - tests/uvm/flow.yaml
   - tests/perf/flow.yaml
+  - tests/fw/flow.yaml

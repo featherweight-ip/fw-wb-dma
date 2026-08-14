@@ -1,27 +1,34 @@
+import wb_dma_hs_pkg::*;
+
 // The hardware-handshake operation model, one instance per handshake-capable
-// channel (docs/wb_dma_operation_model.md §4, `dma_hs_c`).
+// channel (§4, ``dma_hs_c``).
 //
-// The participant here is the PERIPHERAL DEVICE, not the processor: this is
-// the model a device-side consumer -- or a requesting IP's own operation model
-// -- composes with. All three operations were already blocking in the first
-// pass; a sideband has no state to poll, so its operations arrive at the right
+// The participant here is the PERIPHERAL DEVICE, not the processor: this is the
+// model a device-side consumer -- or a requesting IP's own operation model --
+// composes with. That is why it lives in ``tests/pss`` rather than in the device
+// tree.
+//
+// All three of its operations are end-to-end or configuration with no polling
+// half. A sideband has no state to poll, so its operations arrive at the right
 // shape naturally.
 //
-// No base address, and that absence is the point: this interface has no
+// **No base address, and that absence is the point:** this interface has no
 // address space at all, which is what distinguishes a sideband from a bus
 // interface.
 //
-// None of these three is ever a driver state. request_chunk() waits on a pin
-// with no processor involved; dma_nd_i and dma_rest_i have no register bit
-// anywhere in §4, so software cannot invoke them at all.
-
-import wb_dma_hs_pkg::*;
-
+// None of the three is ever a driver state. ``request_chunk()`` waits on a pin
+// with no processor involved, and ``dma_nd_i`` / ``dma_rest_i`` have no register
+// bit anywhere in §4, so software cannot invoke them at all.
 component wb_dma_hs_c {
 
-    // Index into dma_req_i / dma_ack_o / dma_nd_i / dma_rest_i.
+    // Index into ``dma_req_i`` / ``dma_ack_o`` / ``dma_nd_i`` / ``dma_rest_i``.
+    //
+    // Set by the environment during initialization, and passed to every foreign
+    // function this component calls.
     int     chan;
 
-    // §3.9 requires dma_nd_i to lead dma_req_i by at least two cycles.
+    // How far ``dma_nd_i`` must lead ``dma_req_i``, in cycles.
+    //
+    // §3.9 requires at least two.
     int     nd_lead_cycles = 2;
 }

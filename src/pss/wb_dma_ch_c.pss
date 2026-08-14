@@ -1,151 +1,123 @@
-// The per-channel MMIO operation model (docs/wb_dma_operation_model.md §3).
-//
-// Every operation the processor initiates against ONE DMA channel lives here.
-// The engine-global operations -- PAUSE, interrupt routing, descriptor memory
-// -- live on wb_dma_c, which owns an array of these.
-//
-// Why per-channel components rather than a `chan` parameter on every function:
-//
-//   The completion condition is a channel register, so an operation is a loop
-//   over an indexed register access. Making the channel an instance rather than
-//   an index keeps every access in the operation code index-free
-//   (`regs.csr.read()`), which is both clearer and safer than indexing a
-//   register array with a runtime value. It also matches the review decision
-//   that operations are per-channel and a waking thread reads its own channel's
-//   status register (§3.1.1).
-//
-//   The cost is that each channel binds its own top-level register group to its
-//   own region -- see initialize below.
-//
-// TWO LAYERS, AND WHICH ONE YOU GET
-//
-// The operations here divide into a non-blocking CORE and a blocking layer
-// built out of it:
-//
-//   core       configure_channel, set_auto_restart, set_software_pointer --
-//              straight-line stores; and transfer_single_start,
-//              transfer_list_start, stop_channel_start, check_completion --
-//              arm-and-return plus a single-read poll. Nothing here ever
-//              suspends, so this layer runs on a target with no scheduler at
-//              all. It is what low-level firmware sees.
-//
-//   blocking   wait_completion, and the end-to-end operations transfer_single,
-//              transfer_list and stop_channel. Each is a *_start() followed by
-//              a wait, and the wait suspends on the `wake` channel below.
-//              Compiled only when wb_dma_cfg_pkg::HAS_BLOCKING.
-//
-// The blocking layer adds no device knowledge -- it adds only the loop. That
-// is what makes the core trustworthy without a second regression: every
-// SystemVerilog run drives the core through the blocking wrappers.
-//
-// The wait points are not an implementation detail to be undone later; they
-// are the specification of the driver state machine this model projects to
-// (§2.3). Splitting them out does not remove them -- it names the two halves
-// the state machine already had.
-
 import addr_reg_pkg::*;
 import sync_pkg::*;
 import wb_dma_cfg_pkg::*;
 import wb_dma_regs_pkg::*;
 import wb_dma_types_pkg::*;
 
+// The per-channel MMIO operation model (§3).
+//
+// Every operation the processor initiates against ONE DMA channel lives here.
+// The engine-global operations live on :pss:comp:`wb_dma_c`, which owns an
+// array of these.
+//
+// **Why per-channel components rather than a `chan` parameter.** The completion
+// condition is a channel register, so making the channel an instance rather
+// than an index keeps every access in the operation code index-free
+// (``regs.csr.read()``), which is both clearer and safer than indexing a
+// register array with a runtime value. It also matches the review decision that
+// a waking thread reads its own channel's status register (§3.1.1). The cost is
+// that each channel binds its own top-level register group.
+//
+// **Two layers, and every target gets both.**
+//
+// ``core``
+//     ``configure_channel``, ``set_auto_restart``, ``set_software_pointer``,
+//     ``transfer_single_start``, ``transfer_list_start``,
+//     ``stop_channel_start``, ``check_completion``. Arm-and-return plus a
+//     single-read poll; nothing here ever waits. The low-level driver API.
+//
+// ``end-to-end``
+//     ``wait_completion``, ``transfer_single``, ``transfer_list``,
+//     ``stop_channel``. Each is a ``*_start()`` followed by
+//     ``repeat { probe_status; wait_hint }``.
+//
+// What varies between profiles is one function body -- ``wait_hint()``, which
+// either suspends on :pss:field:`wake` or spins with ``yield``. Nothing else
+// reads ``HAS_EVENT_WAIT`` except ``notify_irq()``, the event producer.
+//
+// The end-to-end layer adds no device knowledge, only the loop. That is what
+// makes the core trustworthy without a second regression: every SystemVerilog
+// run drives the core through the end-to-end wrappers.
 component wb_dma_ch_c {
 
-    // Which channel this is, in dma_req_i/dma_ack_o and INT_SRC bit numbering.
+    // Which channel this is, in ``dma_req_i``/``dma_ack_o`` and INT_SRC bit
+    // numbering.
+    //
+    // Integrator-facing identity: no operation here reads it, because each
+    // channel reaches its own registers through :pss:field:`regs` rather than
+    // by index. It is what an environment correlates a channel against.
     int                 chan;
 
-    // Build-time capabilities. An absent capability makes the corresponding
-    // control bit silently ignored by hardware, so operations consult this
-    // rather than assuming everything is present.
+    // Build-time capabilities.
+    //
+    // An absent capability makes the corresponding control bit silently ignored
+    // by hardware, so operations consult this rather than assuming everything
+    // is present.
     wb_dma_ch_caps_s    caps;
 
-    // This channel's MMIO register bank. A top-level register group: it is
-    // bound to its own non-allocatable region, not nested inside the device's
-    // global group.
+    // This channel's MMIO register bank.
+    //
+    // A TOP-LEVEL register group, bound to its own non-allocatable region
+    // rather than nested inside the device's global group.
     wb_dma_ch_regs_c    regs;
 
-    // The in-progress guard: holds a token from the moment an end-to-end
+    // The in-progress guard: holds one token from the moment an end-to-end
     // operation arms this channel until its completion has been reported.
     //
-    // PRESENT ON BOTH PROFILES, and that is the point. Only try_put() and
-    // try_get() are used, and neither ever blocks (§21.9.1), so this costs a
-    // target with no scheduler nothing but a saturating counter. `wake` below
-    // is the member that needs a real one.
+    // **What it buys.** Reading CHn_CSR clears ERR and the three
+    // interrupt-source bits (``src/rdl/wb_dma_ch_regs.rdl``). The end-to-end
+    // layer contains that hazard inside a loop that exits holding the value; a
+    // firmware caller driving ``*_start()`` and ``check_completion()`` by hand
+    // does not. Polling a channel nobody armed, and polling past a completion
+    // already consumed, are both invisible without a guard -- the device
+    // answers a stale read exactly as it answers a live one.
     //
-    // WHAT IT BUYS. check_completion() reads CHn_CSR, and that read CLEARS ERR
-    // and the three interrupt-source bits (src/rdl/wb_dma_ch_regs.rdl, Table 6). The
-    // blocking layer contained that hazard inside a loop that exits holding the
-    // value; a firmware caller driving *_start() and check_completion() by hand
-    // does not. Two ways to get it wrong -- polling a channel nobody armed, and
-    // polling on past a completion already consumed -- are both invisible
-    // without a guard, because the device answers a stale read the same way it
-    // answers a live one.
+    // It is NOT a lock: the one-operation-per-channel rule is still the
+    // caller's to keep. It is a detector for the case where it has been broken.
+    // ``stop_channel_start()`` is exempt and claims nothing, because it aborts a
+    // transfer that is by definition already holding the token.
     //
-    // A CHANNEL RATHER THAN A FLAG, for the same reason `wake` is one: PSS 3.1
-    // has no mutable component attribute to hold the bit (§9.1.6), so there is
-    // nowhere to latch "already reported". A depth-1 channel IS the latch.
-    //
-    // check_completion() take-and-restores: try_get() to claim the right to
-    // read, then try_put() back only if the answer was PENDING. So the token
-    // survives exactly as long as the operation does. It is not a lock -- the
-    // one-operation-per-channel rule is still the caller's to keep -- it is a
-    // detector for the case where that rule has already been broken.
-    //
-    // stop_channel_start() is EXEMPT and claims nothing. It exists to abort a
-    // transfer that is by definition already holding the token, so claiming
-    // would report the exemption as a violation. That is the same exemption
-    // stop_channel.pss has always documented, now visible in the code.
+    // A channel rather than a flag because PSS 3.1 has no mutable component
+    // attribute to latch a bit in (§9.1.6); a depth-1 channel IS the latch. It
+    // never blocks -- only ``try_put()``/``try_get()`` are used (§21.9.1) -- so
+    // it costs a target with no scheduler nothing but a saturating counter.
     channel_c<bit, 1>   inflight;
 
-    // The wake-up hint for this channel's waiter. NOT the completion event --
-    // the event is always CHn_CSR, re-read on every wake (wait_completion.pss).
-    // This only says "something happened, look again".
+    // The wake-up hint for this channel's waiter.
     //
-    // WHY A CHANNEL AND NOT A FLAG. A `waiting` bit plus a broadcast to
-    // whoever has it set is the shape this replaced, and it fails twice: PSS
-    // has no mutable component attribute to hold the bit (3.1 dropped
-    // `mutable`; component attributes are set during elaboration and read
-    // thereafter, §9.1.6), and flag-then-block has a lost-wakeup window -- an
-    // interrupt between arming the hardware and setting the bit is dropped and
-    // the waiter blocks forever. A channel has no such window: it IS the
-    // registration. An interrupt that arrives before anyone waits leaves a
-    // token, and the next get() returns immediately. Nothing to set, nothing
-    // to order, nothing to lose.
+    // NOT the completion event -- that is always CHn_CSR, re-read on every
+    // wake. This only says "something happened, look again".
     //
-    // DEPTH 1 IS THE DESIGN, not a default taken for granted. It makes the
-    // channel a coalescing binary semaphore: interrupts arriving while a token
-    // is already pending are absorbed by try_put() failing, and a channel
-    // nobody is waiting on accumulates at most ONE stale token. That bound is
-    // what lets notify_irq() post to every channel blind, without asking who
-    // is waiting -- the worst a non-waiter suffers is one extra CSR read at
-    // the top of its next operation.
+    // A channel and not a flag for the same reason as :pss:field:`inflight`,
+    // plus one more: flag-then-block has a lost-wakeup window, where an
+    // interrupt arriving between arming the hardware and setting the bit is
+    // dropped and the waiter blocks forever. A channel IS the registration --
+    // an interrupt that arrives before anyone waits leaves a token, and the next
+    // ``get()`` returns immediately.
     //
-    // channel_c is target-only: every function on it is a `target function`,
-    // so nothing here is reachable from a solve exec.
+    // **Depth 1 is the design.** It makes this a coalescing binary semaphore:
+    // interrupts arriving while a token is pending are absorbed by ``try_put()``
+    // failing, and a channel nobody waits on accumulates at most ONE stale
+    // token. That bound is what lets ``notify_irq()`` post to every channel
+    // blind.
     //
-    // DELIBERATELY NOT GATED, unlike everything else that exists only for the
-    // blocking layer. Two reasons, one principled and one forced:
-    //
-    //   * A channel_c MEMBER costs a non-blocking target nothing it was not
-    //     already paying. `inflight` above requires the same type, and it is
-    //     get() -- not the declaration -- that needs a scheduler. Nothing on
-    //     the non-blocking profile calls get(), so nothing suspends.
-    //
-    //   * pssparser cannot currently do it anyway. A declaration inside a
-    //     `compile if` is invisible to every LATER source file (defect 4,
-    //     docs/pssparser-defects-2026-08-02.md), and this member is read from
-    //     blocking_ops.pss and from wb_dma_c/functions/notify_irq.pss. Gating
-    //     it does not produce an error -- it produces an unresolved reference
-    //     reported as `0 errors`.
-    //
-    // The first reason is why this is acceptable rather than merely necessary:
-    // if the defect were fixed tomorrow, this member would stay ungated.
+    // Deliberately not gated, unlike ``notify_irq()``. A ``channel_c`` member
+    // costs a polling target nothing -- it is ``get()``, not the declaration,
+    // that needs a scheduler, and ``wait_hint()`` never calls it there.
+    // (pssparser could not gate it anyway: a declaration inside a ``compile if``
+    // is invisible to every later file, defect 4, and this member is read from
+    // two of them.)
     channel_c<bit, 1>   wake;
 
-    // Bind the bank. Called from wb_dma_c's own initialize, which is called
-    // from the environment's init_down exec -- component attributes are only
-    // mutable during initialization, and set_handle() is only legal from an
-    // init exec.
+    // Bind this channel's register bank.
+    //
+    // Called from ``wb_dma_c::initialize()``, itself called from the
+    // environment's ``init_down`` exec: component attributes are mutable only
+    // during initialization, and ``set_handle()`` is only legal from an init
+    // exec.
+    //
+    // :param id:   this channel's index, stored as :pss:field:`chan`
+    // :param bank: handle to this channel's register bank
     solve function void initialize(int id, addr_handle_t bank) {
         chan = id;
         regs.set_handle(bank);

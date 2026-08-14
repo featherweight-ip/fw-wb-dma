@@ -1,59 +1,81 @@
-// System assembly: the address space, the DMA's two operation models, and the
-// integration constants that place the device in the map.
+// MAINTAINER NOTE, not documentation.
 //
-// Everything here is environment, not device. The register offsets and the
-// channel stride are in wb_dma_regs_pkg; only the BASE address and the system
-// RAM live at this level, because only the system knows them.
+// ASSERTS RATHER THAN A `compile if`: SELECTING THIS TREE IS THE REQUEST.
+// Gating instead would silently produce a model with no actions and no root,
+// which links clean and tests nothing -- precisely the quiet failure mode this
+// project already fights in file ordering. A named error at elaboration is the
+// whole point.
+//
+// TWO INDEPENDENT REQUIREMENTS, so there are TWO asserts. A single combined one
+// would report the wrong cause half the time.
+//
+// Note what this is NOT about any more: the device tree (src/pss) exposes its
+// whole operation surface on both profiles -- transfer_single() and friends
+// exist either way, and only wait_hint()'s body differs. What remains gated is
+// the SCENARIO layer and notify_irq().
 
 import addr_reg_pkg::*;
 import wb_dma_cfg_pkg::*;
 import wb_dma_regs_pkg::*;
 
+// System assembly: the address space, the DMA's two operation models, and the
+// integration constants that place the device in the map.
+//
+// Everything here is ENVIRONMENT, not device. The register offsets and the
+// channel stride live in ``wb_dma_regs_pkg``; only the base address and the
+// system RAM live at this level, because only the system knows them.
 component pss_top {
 
-    // THE SCENARIO LAYER REQUIRES BLOCKING SUPPORT, and this is where that is
-    // enforced.
-    //
-    // The device tree (src/pss) builds on either profile: with
-    // wb_dma_cfg_pkg::HAS_BLOCKING it has the end-to-end operations and their actions,
-    // without it just the non-blocking core. This tree does not have that
-    // choice. Every scenario below composes end-to-end operations, and
-    // wb_dma_hs_c blocks on an imported wb_dma_hs_await_ack() besides -- a
-    // second blocking dependency, foreign rather than channel-based, which the
-    // flag does not describe but which no non-blocking target could satisfy
-    // either.
-    //
-    // So the assert rather than a compile if: SELECTING THIS TREE IS THE
-    // REQUEST FOR BLOCKING SUPPORT. Gating it would silently produce a model
-    // with no actions and no root, which links clean and tests nothing --
-    // precisely the quiet failure mode this project already fights in file
-    // ordering. A named error at elaboration is the whole point.
-    compile assert(wb_dma_cfg_pkg::HAS_BLOCKING,
-        "tests/pss requires a target profile with target_cfg_pkg::HAVE_BLOCKING set (or no target_cfg_pkg at all, which defaults to blocking): every scenario here composes blocking end-to-end operations. Build the non-blocking profile against src/pss alone.");
+    // (1) The scenario layer. Every scenario below composes the actions in
+    // wb_dma_ch_c/actions/blocking_ops_a.pss, which have `rand` fields and
+    // therefore need a solver in the image.
+    compile assert(wb_dma_cfg_pkg::HAS_SOLVER,
+        "tests/pss requires a target profile with target_cfg_pkg::HAVE_RUNTIME_SOLVER set (or no target_cfg_pkg at all, which defaults to it): every scenario here composes the scenario-layer actions, and those are randomized. Note the OPERATIONS exist on every profile -- build the polling profile against src/pss alone.");
 
-    // Where the register file sits in the map. Non-allocatable: it is MMIO,
-    // not memory the solver may hand out for buffers.
+    // (2) The handshake participant. wb_dma_hs_c blocks on an imported
+    // wb_dma_hs_await_ack() -- a foreign blocking dependency rather than a
+    // channel-based one, which HAVE_EVENT_WAIT does not literally describe but
+    // which no target lacking an event wait could satisfy either.
+    compile assert(wb_dma_cfg_pkg::HAS_EVENT_WAIT,
+        "tests/pss requires a target profile with target_cfg_pkg::HAVE_EVENT_WAIT set (or no target_cfg_pkg at all, which defaults to it): wb_dma_hs_c waits on an imported wb_dma_hs_await_ack(), which no target without an event wait can supply.");
+
+    // Where the register file sits in the map.
+    //
+    // The region is non-allocatable: it is MMIO, not memory the solver may hand
+    // out for buffers.
     static const bit[64]  WB_DMA_BASE_ADDR = 0x9d000000;
 
-    // System RAM the test writer's buffers and descriptor lists are claimed
-    // from. Must be reachable from WISHBONE interface 0, since descriptors are
-    // always fetched there (§3.3).
+    // Base of the system RAM the test writer's buffers and descriptor lists are
+    // claimed from.
+    //
+    // Must be reachable from WISHBONE interface 0, since descriptors are always
+    // fetched there (§3.3).
     static const bit[64]  SYS_RAM_BASE     = 0x00000000;
+
+    // Size of that system RAM region.
     static const bit[64]  SYS_RAM_SIZE     = 0x00100000;
 
+    // The system address space: MMIO plus allocatable RAM.
     transparent_addr_space_c<>  sys_mem;
 
     // The MMIO operation model, and its per-channel operations underneath.
     wb_dma_c                dma;
 
-    // The handshake operation model: one per handshake-capable channel. The
-    // participant is the peripheral device, so in a real system these would be
-    // owned by the requesting IP's model rather than sitting alongside the DMA.
+    // The handshake operation model, one per handshake-capable channel.
+    //
+    // The participant is the peripheral device, so in a real system these would
+    // be owned by the requesting IP's model rather than sitting alongside the
+    // DMA.
     wb_dma_hs_c                 hs[wb_dma_types_pkg::WB_DMA_MAX_CH];
 
-    // init_down, not init_up, and the ordering is load-bearing: a child's
-    // init_up runs BEFORE its parent's, so anything a child needs during its
-    // own initialization has to be set on the way DOWN.
+    // Build the address space and bind both operation models into it.
+    //
+    // ``init_down``, not ``init_up``, and the ordering is load-bearing: a
+    // child's ``init_up`` runs BEFORE its parent's, so anything a child needs
+    // during its own initialization has to be set on the way DOWN.
+    //
+    // :exec init_down: reserves the MMIO window, binds the register file, adds
+    //                  system RAM, and numbers the handshake models
     exec init_down {
         transparent_addr_region_s<>  mmio;
         transparent_addr_region_s<>  ram;

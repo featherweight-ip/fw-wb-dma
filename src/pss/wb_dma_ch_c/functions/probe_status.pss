@@ -1,39 +1,38 @@
-// probe_status -- not an operation, and not the API. The unguarded CSR decode
-// that both layers are built from.
-//
-// One read of CHn_CSR, turned into a wb_dma_status_e. Nothing else: no
-// in-progress guard, no blocking, no loop. It exists because the guard and the
-// decode are separable concerns and exactly one caller needs the decode
-// without the guard.
-//
-//   check_completion()  guard + this. The non-blocking API. Firmware calls it.
-//   wait_completion()   this, in a loop, under a wake. The guard would be
-//                       wrong inside a loop -- it is claimed once by the
-//                       *_start() and released once by the operation that
-//                       started it, not taken and put back on every poll.
-//   stop_channel()      this, in a loop, holding NO token. stop is the
-//                       documented exemption from the one-operation rule
-//                       (stop_channel.pss), so it has no token to release.
-//
-// CALLERS OUTSIDE THIS COMPONENT SHOULD USE check_completion(). PSS has no
-// visibility control, so this cannot be enforced -- but a firmware caller that
-// reaches past the guard to get here has opted out of the only detector for
-// the read-to-clear hazard, and gets the silent misbehaviour the guard exists
-// to catch.
-//
-// WHY ERR IS TESTED BEFORE DONE. The two are not exclusive: an aborted
-// transfer can retire with both set, and a stop that lands on an
-// already-completed channel certainly does. Reporting ERROR in that case is
-// the conservative reading -- a scenario that expected DONE learns something
-// went wrong, where the reverse ordering would hide it.
-//
-// The read is a side effect, every time. See wb_dma_ch_c.pss (`inflight`) and
-// wait_completion.pss for what that costs and who is allowed to pay it.
 import wb_dma_regs_pkg::*;
 import wb_dma_types_pkg::*;
 
 extend component wb_dma_ch_c {
 
+    // Decode one read of CHn_CSR into a status. The unguarded primitive both
+    // layers are built from.
+    //
+    // Not an operation, and not the API: no in-progress guard, no blocking, no
+    // loop. It exists because the guard and the decode are separable concerns
+    // and exactly one caller needs the decode without the guard.
+    //
+    // ``check_completion()``
+    //     Guard plus this. The non-blocking API; firmware calls it.
+    //
+    // ``wait_completion()``
+    //     This, in a loop, under a wake. The guard would be wrong inside a loop
+    //     -- it is claimed once by the ``*_start()`` and released once by the
+    //     operation that started it, not taken and put back on every poll.
+    //
+    // ``stop_channel()``
+    //     This, in a loop, holding no token. Stop is the documented exemption
+    //     from the one-operation-per-channel rule, so it has none to release.
+    //
+    // ERR is tested before DONE because the two are not exclusive: an aborted
+    // transfer can retire with both set, and a stop that lands on an
+    // already-completed channel certainly does. Reporting ERROR is the
+    // conservative reading -- a scenario that expected DONE learns something
+    // went wrong, where the reverse order would hide it.
+    //
+    // .. warning::
+    //    Callers outside this component should use ``check_completion()``. PSS
+    //    has no visibility control, so this cannot be enforced -- but reaching
+    //    past the guard opts out of the only detector for the read-to-clear
+    //    hazard, and the read is a side effect every time.
     target function wb_dma_status_e probe_status() {
         wb_dma_csr_s csr;
 

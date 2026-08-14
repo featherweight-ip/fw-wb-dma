@@ -116,3 +116,4 @@ addrmap wb_dma_regs #(
     // Per-channel banks (0x20, stride 0x20, §4.4)
     wb_dma_ch_regs bank[NUM_CH] @0x20 += 0x20;
 };
+

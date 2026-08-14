@@ -15,6 +15,9 @@ package:
       url: https://git.dvkit.org/psstools/pssparser.git
     - name: pss-skills
       url: https://git.dvkit.org/psstools/pss-skills.git
+    - name: sphinx-pss
+      url: https://git.dvkit.org/psstools/sphinx-pss.git
+
     - name: peakrdl-pss
       url: https://git.dvkit.org/psstools/peakrdl-pss.git
     - name: dv-flow-libproject

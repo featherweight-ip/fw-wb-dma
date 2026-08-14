@@ -1,65 +1,63 @@
-// THIS MODEL'S CONFIGURATION, derived from the target's.
+// MAINTAINER NOTE, not documentation -- two properties of the shape below are
+// load-bearing and easy to "simplify" into a defect:
 //
-// One file, one constant, one question: does this build of the model expose
-// the blocking layer? Everything downstream reads `wb_dma_cfg_pkg::HAS_BLOCKING`
-// and nothing downstream mentions `target_cfg_pkg` or `compile has`.
-//
-// This used to be two mutually-exclusive files selected by an `exclude:` in
-// `src/pss/flow.yaml`. It is one file now because the choice moved to where it
-// belongs: `target_cfg_pkg` describes the EXECUTION TARGET (see
-// `docs/target-cfg-contract.md`), and this package is only the adapter that
-// turns the target's answer into this model's.
-//
-// WHAT THE FLAG SELECTS, in full:
-//
-//   true   wb_dma_ch_c.wake, wait_completion(), the three blocking end-to-end
-//          operations (transfer_single, transfer_list, stop_channel), their
-//          scenario actions, and wb_dma_c::notify_irq().
-//   false  none of the above exists. The tree is the non-blocking core only:
-//          configuration operations, the three *_start() functions and
-//          check_completion(). There is no end-to-end operation, by design --
-//          firmware writes its own poll loop, in its own environment, where a
-//          spin is free.
-//
-// Everything the non-blocking profile contains is also executed by the
-// blocking one: the blocking wrappers are start() + wait, and wait is a loop
-// over the same CSR decode check_completion() uses. So a SystemVerilog
-// regression exercises the firmware path on every run without building a
-// second image.
-//
-// TWO THINGS ABOUT THE SHAPE BELOW, both load-bearing:
-//
-//   * IT IS NESTED, not one expression. Writing the LRM's own Example275 shape
-//     -- `compile has(V) && target_cfg_pkg::HAVE_BLOCKING` -- is a hard error
-//     in pssparser, which evaluates both operands of a compile-time binary
+//   * THE GUARD IS NESTED, not one expression. `compile has(V) &&
+//     target_cfg_pkg::X` -- the LRM's own Example275 -- is a hard error in
+//     pssparser, which evaluates both operands of a compile-time binary
 //     expression eagerly. Short-circuiting is normative (§8.4.4) but it governs
-//     EVALUATION, not name resolution, and nothing normative exempts a
-//     short-circuited operand from §19.1.2's "previously declared" rule. Nested,
-//     the reference to HAVE_BLOCKING sits in an already-enabled branch and is a
-//     plain resolution. `!compile has(V) || ...` is the same bet mirrored; also
-//     avoid it. Full reasoning in docs/target-cfg-contract.md.
+//     EVALUATION, not name resolution. `!compile has(V) || ...` is the same bet
+//     mirrored; also avoid it.
 //
-//   * THE DEFAULT IS TRUE, i.e. the richer model. An unconfigured build that
-//     defaulted to false would silently delete the blocking and scenario layers
-//     and still elaborate, link and test nothing. Defaulting to true fails at
-//     the missing runtime primitive instead -- loudly, with a location.
+//   * THE DEFAULT IS TRUE, i.e. the richer wait. Defaulting to false would drop
+//     `wake` and notify_irq() and still elaborate -- a hang or livelock in
+//     simulation rather than a diagnostic. Defaulting to true fails at the
+//     missing runtime primitive instead, loudly and with a location.
 //
-// A provider that declares TARGET_CFG_VERSION is obliged to declare every
-// contract constant, which is why HAVE_BLOCKING is referenced directly rather
-// than guarded a second time. That obligation is also what makes a misspelling
-// here a compile error rather than a silent fallback to the default.
+// There is no `package target_cfg_pkg { }` stub in this tree and none is
+// needed: `compile has` naming an undeclared package evaluates to false, so an
+// unconfigured build reaches the `else`. A real provider comes from pssc's
+// target prelude, ahead of every file here, and is obliged to declare every
+// contract constant -- so a misspelling is a compile error, not a silent
+// fallback to the default.
+
+// This model's build configuration, derived from the execution target's.
 //
-// There is no `package target_cfg_pkg { }` stub in this tree, and none is
-// needed: `compile has` naming an undeclared package evaluates to false rather
-// than erroring, so an unconfigured build reaches the `else` below. When a
-// provider IS present it comes from pssc's target prelude, which is processed
-// ahead of every file here.
+// The adapter, and the only file that mentions ``target_cfg_pkg`` or
+// ``compile has``. Everything downstream reads the two constants below. The
+// full contract is ``docs/target-cfg-contract.md``.
+//
+// **HAS_EVENT_WAIT** -- can a caller on this target wait for an EVENT? It
+// selects the wait PRIMITIVE and nothing else:
+//
+// ``true``
+//     ``wb_dma_ch_c.wake`` and ``wb_dma_c::notify_irq()`` exist, and
+//     ``wait_hint()`` suspends on the channel.
+//
+// ``false``
+//     Neither exists, and ``wait_hint()`` spins with ``yield``.
+//
+// It does NOT select the operation surface: ``wait_completion()``, the three
+// end-to-end operations and their scenario actions are present on BOTH
+// profiles, written against ``wait_hint()``, so a firmware caller gets the same
+// API a UVM test gets. It replaced ``HAS_BLOCKING`` ("can the runtime suspend a
+// thread?"), which conflated that with whether there is an event to wait on at
+// all. Only the latter is a real capability -- every target can spin.
+//
+// **HAS_SOLVER** -- gates the SCENARIO layer, the actions in
+// ``wb_dma_ch_c/actions/blocking_ops_a.pss``. Those have ``rand`` fields, and a
+// target with no solver in the image has nothing to populate them with. It is
+// separate from ``HAS_EVENT_WAIT`` so that a target with a solver and no event
+// source, or the reverse, is expressible. Both current profiles answer both
+// questions the same way (``op-model-sv`` true/true, ``op-model-c``
+// false/false).
 package wb_dma_cfg_pkg {
 
     compile if (compile has(target_cfg_pkg::TARGET_CFG_VERSION)) {
-        static const bool HAS_BLOCKING = target_cfg_pkg::HAVE_BLOCKING;
+        static const bool HAS_EVENT_WAIT = target_cfg_pkg::HAVE_EVENT_WAIT;
+        static const bool HAS_SOLVER     = target_cfg_pkg::HAVE_RUNTIME_SOLVER;
     } else {
-        static const bool HAS_BLOCKING = true;
+        static const bool HAS_EVENT_WAIT = true;
+        static const bool HAS_SOLVER     = true;
     }
 
 }

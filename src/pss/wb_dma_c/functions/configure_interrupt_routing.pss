@@ -1,30 +1,27 @@
-// configure_interrupt_routing -- operation model §3.2, group 2,
-// level: configuration.
-//
-// completes_when: INT_MSK_A/B updated.
-// waits for:      nothing.
-//
-// Two banks, two independent aggregate outputs; a channel may be routed to
-// both. Because every end-to-end operation completes on an interrupt, this is
-// a HARD PREREQUISITE for all of them -- the one configuration operation with
-// no optional reading.
-//
-// AND IT IS ENFORCED BY DEADLOCK. wait_completion() blocks on a channel posted
-// by notify_irq(), which the environment calls only when the aggregate output
-// asserts. Omit this call and no interrupt is ever raised, so nothing wakes and
-// every end-to-end operation hangs. This used to be survivable -- the wait was
-// a `yield` spin off CSR, which completed with the interrupt path silently
-// unexercised. It is not survivable now, on purpose. Routing at least one
-// channel in a bank keeps the whole test alive, because notify_irq() posts to
-// every channel blind; routing nothing hangs at the first wait.
-//
-// The mask stays a bit vector rather than becoming a channel list because it
-// genuinely is one: bit N routes channel N.
 import wb_dma_regs_pkg::*;
 import wb_dma_types_pkg::*;
 
 extend component wb_dma_c {
 
+    // Route a set of channels to one of the two aggregate interrupt outputs.
+    //
+    // *§3.2 group 2, configuration.* Completes when INT_MSK_A/B has been
+    // updated; waits for nothing.
+    //
+    // The two banks are independent aggregate outputs, and a channel may be
+    // routed to both. ``channel_mask`` stays a bit vector rather than becoming
+    // a channel list because it genuinely is one: bit N routes channel N.
+    //
+    // **A hard prerequisite for every end-to-end operation, enforced by
+    // deadlock** on the event-wait profile. Completion IS the interrupt, so a
+    // test that routes nothing raises no interrupt, nothing calls
+    // ``notify_irq()``, and the first wait blocks forever. Routing at least one
+    // channel in a bank keeps the whole test alive, because ``notify_irq()``
+    // posts to every channel blind. That is intended: a hang is a more honest
+    // result than a green test whose completion path was never exercised.
+    //
+    // :param bank:         which aggregate output to program
+    // :param channel_mask: bit N routes channel N
     target function void configure_interrupt_routing(
             wb_dma_int_bank_e bank,
             bit[31]           channel_mask) {

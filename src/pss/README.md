@@ -30,41 +30,61 @@ pssparser $(pss-order --from-flow src/pss --task src --relative-to .)
 ## Configuration: `target_cfg_pkg` and `wb_dma_cfg_pkg`
 
 The one knob in this tree answers a question about the EXECUTION TARGET -- can
-the runtime suspend a thread? -- so it is not device knowledge either. The
+a caller wait for an EVENT? -- so it is not device knowledge either. The
 convention that carries the answer is `docs/target-cfg-contract.md`; in short:
 
 | File | What it is |
 |---|---|
-| `wb_dma_cfg_pkg.pss` | the adapter, and the only file. Derives `HAS_BLOCKING` from the target's answer, defaulting **true** when unconfigured. Every use site reads this and nothing else. |
+| `wb_dma_cfg_pkg.pss` | the adapter, and the only file. Derives `HAS_EVENT_WAIT` from the target's answer, defaulting **true** when unconfigured. Every use site reads this and nothing else. |
+
+**What the flag selects is the wait PRIMITIVE, not the operation surface.**
+Every operation in this tree exists on both profiles. Exactly two things read
+the flag:
+
+| Site | `true` | `false` |
+|---|---|---|
+| `wb_dma_ch_c/functions/wait_hint.pss` (the body) | `wake.get()` — suspend until posted | `yield` — spin |
+| `wb_dma_c/functions/notify_irq.pss` (whole function) | present: the event producer | absent: there is no event |
+
+That is a deliberate narrowing. The flag used to be `HAS_BLOCKING` and gated the
+whole waiting layer, so a target without a scheduler got a strictly smaller
+model — a firmware author and a UVM author wrote against two different APIs for
+one device. But no operation here needs to know whether the runtime can suspend
+a thread; it needs a way to wait, and spinning is one, available everywhere.
+See `wb_dma_ch_c/functions/wait_hint.pss`.
 
 There is no `target_cfg_pkg` stub in this tree. `compile has` naming an
 undeclared package evaluates to false rather than erroring, so the unconfigured
 case reaches the `else` branch on its own.
 
 The answer itself is not a file here. pssc injects `target_cfg_pkg` ahead of
-these sources: `op-model-sv` publishes `HAVE_BLOCKING=true`, and the
+these sources: `op-model-sv` publishes `HAVE_EVENT_WAIT=true`, and the
 `check-nonblocking` task asks for the other answer with `target_cfg:` in
 `flow.yaml`. There is **one fileset** and no `exclude:` — a profile is a
 property of the target, so it is stated as one rather than as a different set
-of files. Both profiles are checked on every `dfm run` (127 types vs 124).
+of files. Both profiles are checked on every `dfm run` (139 types vs 136 — the
+difference is `notify_irq` and the three scenario actions).
 
 Two properties are worth not breaking. The guard is **nested**, not a single
 `compile has(V) && ...` expression -- that shape is the LRM's own Example275 and
 pssparser rejects it, because short-circuiting governs evaluation and not name
-resolution. And the default is the **richer** model, because an unconfigured
-build that defaulted the other way would silently delete the blocking layer,
-elaborate clean, and test nothing.
+resolution. And the default is the **richer** wait, because an unconfigured
+build that defaulted the other way would turn every wait into a spin and
+elaborate clean — which in a simulation is a hang, not a diagnostic.
+
+`HAVE_BLOCKING` (contract v1) is **rejected**, not aliased. The two flags ask
+different questions, so the migration is to re-decide rather than rename.
 
 ## Where the operations live
 
 | Operation (model §) | Level | File |
 |---|---|---|
 | `configure_channel` §3.2 | configuration | `wb_dma_ch_c/functions/configure_channel.pss` |
-| `transfer_single` §3.2 (was `run_transfer`) | end-to-end | `wb_dma_ch_c/functions/transfer_single.pss` |
-| `stop_channel` §3.2 | end-to-end | `wb_dma_ch_c/functions/stop_channel.pss` |
+| `transfer_single` §3.2 (was `run_transfer`) | end-to-end | `wb_dma_ch_c/functions/blocking_ops.pss` |
+| `stop_channel` §3.2 | end-to-end | `wb_dma_ch_c/functions/blocking_ops.pss` |
 | `set_auto_restart` §3.2 | configuration | `wb_dma_ch_c/functions/set_auto_restart.pss` |
 | `set_software_pointer` §3.2 | configuration | `wb_dma_ch_c/functions/set_software_pointer.pss` |
-| `transfer_list` §3.2 (was `run_descriptor_chain`) | end-to-end | `wb_dma_ch_c/functions/transfer_list.pss` |
+| `transfer_list` §3.2 (was `run_descriptor_chain`) | end-to-end | `wb_dma_ch_c/functions/blocking_ops.pss` |
 | `pause_engine` §3.2 | configuration | `wb_dma_c/functions/pause_engine.pss` |
 | `configure_interrupt_routing` §3.2 | configuration | `wb_dma_c/functions/configure_interrupt_routing.pss` |
 | `write_descriptor` §3.2 (was `write_descriptor_list`) | configuration | `wb_dma_c/functions/write_descriptor.pss` |
@@ -73,23 +93,33 @@ elaborate clean, and test nothing.
 | `skip_to_next_descriptor` §4 | end-to-end | `tests/pss/wb_dma_hs_c/functions/skip_to_next_descriptor.pss` |
 | `restart_transfer` §4 | configuration | `tests/pss/wb_dma_hs_c/functions/restart_transfer.pss` |
 
-`wait_completion` is not an operation; it is the shared wait point of every
-end-to-end MMIO operation, and the file carries the reasoning about which
-register a repeated `check_cond` may safely read.
+Three functions in this tree are not operations:
 
-`notify_irq` (`wb_dma_c/functions/notify_irq.pss`) is not an operation either,
-and it is the one function here the system does not initiate: it is the
-**environment's entry point**, called by the testbench's interrupt monitor when
-the DMA's aggregate output asserts. No PSS code calls it. It `try_put`s a token
-into every channel's depth-1 `wake` channel, which is what `wait_completion`
-blocks on. Keeping the notification outside PSS is what avoids a
-never-retiring interrupt-service action that every scenario would have to
-compose in `parallel`.
+`wait_completion` (`wb_dma_ch_c/functions/blocking_ops.pss`) is the shared wait
+point of every end-to-end MMIO operation, and the file carries the reasoning
+about which register a repeated `check_cond` may safely read.
 
-One consequence is worth knowing before you debug a hang: `configure_interrupt_routing`
-is now enforced by deadlock rather than merely documented. A test that routes
-no channel raises no interrupt, so nothing wakes and the first end-to-end
-operation blocks forever.
+`wait_hint` (`wb_dma_ch_c/functions/wait_hint.pss`) is the wait PRIMITIVE, and
+the only function whose body differs between profiles. Contract: return when
+the device may have progressed — it reports nothing and decides nothing, and
+every caller re-reads CHn_CSR afterwards. That is what lets the same loop be
+correct whether it suspends on an interrupt or spins.
+
+`notify_irq` (`wb_dma_c/functions/notify_irq.pss`) is the one function here the
+system does not initiate: it is the **environment's entry point**, called by the
+testbench's interrupt monitor when the DMA's aggregate output asserts. No PSS
+code calls it. It `try_put`s a token into every channel's depth-1 `wake`
+channel, which is what `wait_hint` gets from. Keeping the notification outside
+PSS is what avoids a never-retiring interrupt-service action that every scenario
+would have to compose in `parallel`. It exists only on the event-wait profile —
+it is the event producer, so with no event there is nothing for it to do.
+
+One consequence is worth knowing before you debug a hang, **on the event-wait
+profile**: `configure_interrupt_routing` is enforced by deadlock rather than
+merely documented. A test that routes no channel raises no interrupt, so nothing
+wakes and the first end-to-end operation blocks forever. On a polling profile
+there is no such exposure — `wait_hint` spins, so a caller that routed nothing
+still makes progress.
 
 `bridge_access` is omitted by review decision.
 

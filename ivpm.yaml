@@ -13,8 +13,8 @@ package:
       url: https://git.dvkit.org/psstools/pssc.git
     - name: pssparser
       url: https://git.dvkit.org/psstools/pssparser.git
-    - name: pss-skills
-      url: https://git.dvkit.org/psstools/pss-skills.git
+    - name: agent-skills-pss
+      url: https://git.dvkit.org/psstools/agent-skills-pss.git
     - name: sphinx-pss
       url: https://git.dvkit.org/psstools/sphinx-pss.git
 
